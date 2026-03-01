@@ -21,12 +21,31 @@ st.markdown("""
 .action-good      { background: #34C7591A; padding: 12px; border-radius: 8px; border-left: 4px solid #34C759; margin: 8px 0; }
 .insight-box      { background: #1C1C2E; padding: 16px; border-radius: 10px; border-left: 4px solid #007AFF; margin: 8px 0; line-height: 1.9; }
 .upload-guide     { background: #1C1C2E; padding: 16px; border-radius: 10px; font-size: 0.88rem; line-height: 1.8; }
+.upload-hero      { background: #1C1C2E; padding: 24px; border-radius: 12px; border: 1px solid #2C2C3E; margin-bottom: 24px; }
 </style>
 """, unsafe_allow_html=True)
 
 BASE_DIR = Path.home() / "tiktok-analytics"
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+UPLOAD_GUIDE_MD = """
+**TikTok Studio → Analytics → rechts oben „Exportieren"**
+
+| # | Datei | Tab | Zeitraum |
+|---|---|---|---|
+| 1 | Content (7 Tage) | Content | Letzte 7 Tage |
+| 2 | Content (28 Tage) | Content | Letzte 28 Tage |
+| 3 | Content (365 Tage) | Content | Letzte 365 Tage |
+| 4 | Overview (365 Tage) | Übersicht | Letzte 365 Tage |
+| 5 | Viewers (365 Tage) | Übersicht | Letzte 365 Tage |
+| 6 | Followers (365 Tage) | Follower | Letzte 365 Tage |
+
+**→ Alle 6 ZIPs gleichzeitig hochladen, alten Bestand ersetzen.**
+Das Dashboard merged & dedupliziert automatisch.
+
+💡 **Wo findest du Viewers?** TikTok Studio → Analytics → Tab „Übersicht" → Scroll runter zu „Zuschauer" → Exportieren (365 Tage)
+"""
 
 
 def extract_csvs_from_zip(zip_file):
@@ -202,124 +221,45 @@ def main():
     st.title("📊 DesignParser TikTok Analytics 2026")
     st.caption("Educational Content Benchmarks")
 
-    with st.expander("📋 Welche Dateien hochladen? (jeden Montag)", expanded=False):
-        st.markdown("""
-<div class="upload-guide">
-
-**TikTok Studio → Analytics → rechts oben „Exportieren"**
-
-| Datei | Tab | Zeitraum |
-|---|---|---|
-| Content (7 Tage) | Content | Letzte 7 Tage |
-| Content (28 Tage) | Content | Letzte 28 Tage |
-| Content (365 Tage) | Content | Letzte 365 Tage |
-| Overview (365 Tage) | Übersicht | Letzte 365 Tage |
-| Followers (365 Tage) | Follower | Letzte 365 Tage |
-
-**→ Alle 5 ZIPs gleichzeitig hochladen, alten Bestand ersetzen.**
-Das Dashboard merged & dedupliziert automatisch.
-</div>""", unsafe_allow_html=True)
-
-    st.sidebar.header("📂 Upload Data")
-    uploaded_files = st.sidebar.file_uploader("TikTok ZIP files", type=['zip'], accept_multiple_files=True)
-
-    if uploaded_files:
-        st.sidebar.success(f"✅ {len(uploaded_files)} files")
-        if st.sidebar.button("🔄 Process Data"):
-            with st.spinner("Processing..."):
-                all_content = []; all_overview = []; all_viewers = []
-                all_followers = []; all_activity = []
-
-                for uf in uploaded_files:
-                    ex = extract_csvs_from_zip(uf)
-                    if 'content'           in ex: all_content.append(ex['content'])
-                    if 'overview'          in ex: all_overview.append(ex['overview'])
-                    if 'viewers'           in ex: all_viewers.append(ex['viewers'])
-                    if 'followers'         in ex: all_followers.append(ex['followers'])
-                    if 'follower_activity' in ex: all_activity.append(ex['follower_activity'])
-
-                if all_content:
-                    df = pd.concat(all_content, ignore_index=True)
-                    df = df.rename(columns={
-                        'Video title': 'Video Title', 'Video link': 'Video Link',
-                        'Total views': 'Video Views', 'Total likes': 'Likes',
-                        'Total comments': 'Comments', 'Total shares': 'Shares',
-                        'Post time': 'Posted Date',
-                    })
-                    for col in ['Video Views', 'Likes', 'Comments', 'Shares']:
-                        df[col] = clean_numeric(df[col])
-                    df = df.sort_values('Video Views', ascending=False)
-                    df = df.drop_duplicates(subset=['Video Link'], keep='first')
-                    st.sidebar.success(f"✅ {len(df)} unique videos")
-                    df['Posted Date']     = smart_parse_dates(df['Posted Date'])
-                    df['Share Rate']      = (df['Shares'] / df['Video Views'].replace(0, 1) * 100).clip(0, 100)
-                    df['Engagement Rate'] = ((df['Likes'] + df['Comments'] + df['Shares']) /
-                                              df['Video Views'].replace(0, 1) * 100).clip(0, 100)
-                    df['Category']        = df['Video Title'].apply(categorize_topic)
-                    df.to_csv(DATA_DIR / 'content.csv', index=False)
-
-                if all_overview:
-                    df = pd.concat(all_overview, ignore_index=True)
-                    df = df.rename(columns={'Video Views': 'Views'})
-                    df['Date'] = smart_parse_dates(df['Date'])
-                    for col in ['Views', 'Profile Views', 'Likes', 'Comments', 'Shares']:
-                        if col in df.columns: df[col] = clean_numeric(df[col])
-                    df = df[df['Views'] > 0].dropna(subset=['Date'])
-                    df = df.drop_duplicates(subset=['Date'], keep='last')
-                    df.to_csv(DATA_DIR / 'overview.csv', index=False)
-                    st.sidebar.success(f"✅ Overview: {len(df)} days")
-
-                if all_viewers:
-                    df = pd.concat(all_viewers, ignore_index=True)
-                    df = df.rename(columns={'Total Viewers': 'Total', 'New Viewers': 'New', 'Returning Viewers': 'Returning'})
-                    df['Date'] = smart_parse_dates(df['Date'])
-                    for col in ['Total', 'New', 'Returning']:
-                        if col in df.columns: df[col] = clean_numeric(df[col])
-                    df = df[df['Total'] > 0].dropna(subset=['Date'])
-                    df = df.drop_duplicates(subset=['Date'], keep='last')
-                    df.to_csv(DATA_DIR / 'viewers.csv', index=False)
-                    st.sidebar.success(f"✅ Viewers: {len(df)} days")
-
-                if all_followers:
-                    df = pd.concat(all_followers, ignore_index=True)
-                    df = df.rename(columns={'Difference in followers from previous day': 'Daily Growth'})
-                    df['Date'] = smart_parse_dates(df['Date'])
-                    for col in ['Followers', 'Daily Growth']:
-                        if col in df.columns: df[col] = clean_numeric(df[col])
-                    df = df[df['Followers'] > 0].dropna(subset=['Date'])
-                    df = df.drop_duplicates(subset=['Date'], keep='last')
-                    df.to_csv(DATA_DIR / 'followers.csv', index=False)
-                    st.sidebar.success(f"✅ Followers: {len(df)} days")
-
-                if all_activity:
-                    df = pd.concat(all_activity, ignore_index=True)
-                    df.columns = [c.strip() for c in df.columns]
-                    rename_map = {}
-                    for c in df.columns:
-                        cl = c.lower()
-                        if 'hour' in cl: rename_map[c] = 'Hour'
-                        elif 'active' in cl: rename_map[c] = 'Active'
-                    df = df.rename(columns=rename_map)
-                    if 'Hour' in df.columns and 'Active' in df.columns:
-                        df['Hour']   = clean_numeric(df['Hour']).astype(int)
-                        df['Active'] = clean_numeric(df['Active'])
-                        df = df[df['Active'] > 0]
-                        df.to_csv(DATA_DIR / 'activity.csv', index=False)
-                        st.sidebar.success("✅ Activity: ✓")
-
-                st.sidebar.success("🎉 Done!")
-                st.rerun()
-
     content_path   = DATA_DIR / 'content.csv'
     overview_path  = DATA_DIR / 'overview.csv'
     viewers_path   = DATA_DIR / 'viewers.csv'
     followers_path = DATA_DIR / 'followers.csv'
     activity_path  = DATA_DIR / 'activity.csv'
 
+    # ── UPLOAD GUIDE ──────────────────────────────────────────────────────────
+    # Wenn noch keine Daten vorhanden: Anleitung groß & prominent anzeigen
     if not content_path.exists():
-        st.info("👆 Upload TikTok exports to start")
+        st.markdown("## 👆 So startest du")
+        st.markdown(
+            "<div class='upload-hero'>" + UPLOAD_GUIDE_MD.replace("\n", "<br>") + "</div>",
+            unsafe_allow_html=True
+        )
+        st.info("Lade die ZIPs in der Sidebar hoch und klicke auf **Process Data**.")
+        # Sidebar trotzdem anzeigen, damit der Upload direkt möglich ist
+        st.sidebar.header("📂 Upload Data")
+        uploaded_files = st.sidebar.file_uploader("TikTok ZIP files", type=['zip'], accept_multiple_files=True)
+        if uploaded_files:
+            st.sidebar.success(f"✅ {len(uploaded_files)} files")
+            if st.sidebar.button("🔄 Process Data"):
+                _process_uploads(uploaded_files)
+                st.rerun()
         return
 
+    # ── SIDEBAR: Upload (wiederkehrend) + kompakte Anleitung ──────────────────
+    st.sidebar.header("📂 Upload Data")
+    uploaded_files = st.sidebar.file_uploader("TikTok ZIP files", type=['zip'], accept_multiple_files=True)
+
+    if uploaded_files:
+        st.sidebar.success(f"✅ {len(uploaded_files)} files")
+        if st.sidebar.button("🔄 Process Data"):
+            _process_uploads(uploaded_files)
+            st.rerun()
+
+    with st.sidebar.expander("📋 Welche ZIPs hochladen?", expanded=False):
+        st.markdown(UPLOAD_GUIDE_MD)
+
+    # ── Sidebar-Status ────────────────────────────────────────────────────────
     content_df   = pd.read_csv(content_path)
     overview_df  = pd.read_csv(overview_path)  if overview_path.exists()  else None
     viewers_df   = pd.read_csv(viewers_path)   if viewers_path.exists()   else None
@@ -334,6 +274,8 @@ Das Dashboard merged & dedupliziert automatisch.
     st.sidebar.divider()
     st.sidebar.write(f"✅ Videos: {len(content_df)}")
     if overview_df  is not None: st.sidebar.write(f"✅ Daily: {len(overview_df)} days")
+    if viewers_df   is not None: st.sidebar.write(f"✅ Viewers: {len(viewers_df)} days")
+    else:                        st.sidebar.write("⚠️ Viewers: nicht geladen")
     if followers_df is not None: st.sidebar.write(f"✅ Followers: {len(followers_df)} days")
     if activity_df  is not None: st.sidebar.write("✅ Activity: ✓")
 
@@ -417,6 +359,8 @@ Das Dashboard merged & dedupliziert automatisch.
         fig.update_layout(barmode='stack', height=250, margin=dict(l=0,r=0,t=10,b=0),
                           legend=dict(orientation='h', y=1.1))
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("📌 **Viewers-Daten fehlen** — Lade das Viewers ZIP (365 Tage) hoch, um New vs. Returning zu sehen.")
 
     # DAILY VIEWS
     if overview_df is not None:
@@ -512,6 +456,91 @@ Das Dashboard merged & dedupliziert automatisch.
     fig.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
     fig.update_layout(height=350, showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
+
+
+def _process_uploads(uploaded_files):
+    """Extracts and saves all ZIP data to DATA_DIR."""
+    all_content = []; all_overview = []; all_viewers = []
+    all_followers = []; all_activity = []
+
+    for uf in uploaded_files:
+        ex = extract_csvs_from_zip(uf)
+        if 'content'           in ex: all_content.append(ex['content'])
+        if 'overview'          in ex: all_overview.append(ex['overview'])
+        if 'viewers'           in ex: all_viewers.append(ex['viewers'])
+        if 'followers'         in ex: all_followers.append(ex['followers'])
+        if 'follower_activity' in ex: all_activity.append(ex['follower_activity'])
+
+    if all_content:
+        df = pd.concat(all_content, ignore_index=True)
+        df = df.rename(columns={
+            'Video title': 'Video Title', 'Video link': 'Video Link',
+            'Total views': 'Video Views', 'Total likes': 'Likes',
+            'Total comments': 'Comments', 'Total shares': 'Shares',
+            'Post time': 'Posted Date',
+        })
+        for col in ['Video Views', 'Likes', 'Comments', 'Shares']:
+            df[col] = clean_numeric(df[col])
+        df = df.sort_values('Video Views', ascending=False)
+        df = df.drop_duplicates(subset=['Video Link'], keep='first')
+        st.sidebar.success(f"✅ {len(df)} unique videos")
+        df['Posted Date']     = smart_parse_dates(df['Posted Date'])
+        df['Share Rate']      = (df['Shares'] / df['Video Views'].replace(0, 1) * 100).clip(0, 100)
+        df['Engagement Rate'] = ((df['Likes'] + df['Comments'] + df['Shares']) /
+                                  df['Video Views'].replace(0, 1) * 100).clip(0, 100)
+        df['Category']        = df['Video Title'].apply(categorize_topic)
+        df.to_csv(DATA_DIR / 'content.csv', index=False)
+
+    if all_overview:
+        df = pd.concat(all_overview, ignore_index=True)
+        df = df.rename(columns={'Video Views': 'Views'})
+        df['Date'] = smart_parse_dates(df['Date'])
+        for col in ['Views', 'Profile Views', 'Likes', 'Comments', 'Shares']:
+            if col in df.columns: df[col] = clean_numeric(df[col])
+        df = df[df['Views'] > 0].dropna(subset=['Date'])
+        df = df.drop_duplicates(subset=['Date'], keep='last')
+        df.to_csv(DATA_DIR / 'overview.csv', index=False)
+        st.sidebar.success(f"✅ Overview: {len(df)} days")
+
+    if all_viewers:
+        df = pd.concat(all_viewers, ignore_index=True)
+        df = df.rename(columns={'Total Viewers': 'Total', 'New Viewers': 'New', 'Returning Viewers': 'Returning'})
+        df['Date'] = smart_parse_dates(df['Date'])
+        for col in ['Total', 'New', 'Returning']:
+            if col in df.columns: df[col] = clean_numeric(df[col])
+        df = df[df['Total'] > 0].dropna(subset=['Date'])
+        df = df.drop_duplicates(subset=['Date'], keep='last')
+        df.to_csv(DATA_DIR / 'viewers.csv', index=False)
+        st.sidebar.success(f"✅ Viewers: {len(df)} days")
+
+    if all_followers:
+        df = pd.concat(all_followers, ignore_index=True)
+        df = df.rename(columns={'Difference in followers from previous day': 'Daily Growth'})
+        df['Date'] = smart_parse_dates(df['Date'])
+        for col in ['Followers', 'Daily Growth']:
+            if col in df.columns: df[col] = clean_numeric(df[col])
+        df = df[df['Followers'] > 0].dropna(subset=['Date'])
+        df = df.drop_duplicates(subset=['Date'], keep='last')
+        df.to_csv(DATA_DIR / 'followers.csv', index=False)
+        st.sidebar.success(f"✅ Followers: {len(df)} days")
+
+    if all_activity:
+        df = pd.concat(all_activity, ignore_index=True)
+        df.columns = [c.strip() for c in df.columns]
+        rename_map = {}
+        for c in df.columns:
+            cl = c.lower()
+            if 'hour' in cl: rename_map[c] = 'Hour'
+            elif 'active' in cl: rename_map[c] = 'Active'
+        df = df.rename(columns=rename_map)
+        if 'Hour' in df.columns and 'Active' in df.columns:
+            df['Hour']   = clean_numeric(df['Hour']).astype(int)
+            df['Active'] = clean_numeric(df['Active'])
+            df = df[df['Active'] > 0]
+            df.to_csv(DATA_DIR / 'activity.csv', index=False)
+            st.sidebar.success("✅ Activity: ✓")
+
+    st.sidebar.success("🎉 Done!")
 
 
 if __name__ == "__main__":

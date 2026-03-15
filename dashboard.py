@@ -44,7 +44,8 @@ UPLOAD_GUIDE_MD = """
 **→ Alle 6 ZIPs gleichzeitig hochladen, alten Bestand ersetzen.**
 Das Dashboard merged & dedupliziert automatisch.
 
-💡 **Wo findest du Viewers?** TikTok Studio → Analytics → Tab „Übersicht" → Scroll runter zu „Zuschauer" → Exportieren (365 Tage)
+💡 **Wo findest du Viewers?**
+TikTok Studio → Analytics → Tab „Übersicht" → Scroll runter zu „Zuschauer" → Exportieren (365 Tage)
 """
 
 
@@ -73,6 +74,18 @@ def extract_csvs_from_zip(zip_file):
 
 def clean_numeric(series):
     return pd.to_numeric(series.replace('undefined', pd.NA), errors='coerce').fillna(0)
+
+
+def fmt_date(dt, fmt='short'):
+    """Windows-kompatibles Datumsformat — %-d funktioniert nur auf Linux/Mac."""
+    if dt is None or pd.isna(dt): return '?'
+    try:
+        if fmt == 'short':   return f"{dt.day}. {dt.strftime('%b')}"
+        if fmt == 'numeric': return f"{dt.day}.{dt.month:02d}"
+        if fmt == 'full':    return f"{dt.day}. {dt.strftime('%b %Y')}"
+    except:
+        return str(dt)[:10]
+    return str(dt)[:10]
 
 
 def smart_parse_dates(series):
@@ -113,14 +126,24 @@ def smart_parse_dates(series):
 def categorize_topic(title):
     if pd.isna(title): return 'Other'
     t = str(title).lower()
+    # Reihenfolge wichtig — spezifischere Kategorien zuerst
     keywords = {
-        'Color':       ['color', 'colour', 'hue', 'palette', 'hsl', 'contrast'],
-        'Typography':  ['typography', 'font', 'typeface', 'line height', 'weight', 'scale'],
-        'Layout':      ['grid', 'layout', 'pattern', 'list', 'spacing', 'whitespace'],
-        'UX Laws':     ['law', 'jakob', 'fitts', 'bias', 'hick', 'gestalt'],
-        'Navigation':  ['navigation', 'tabs', 'menu', 'breadcrumb'],
+        'Packaging':   ['packaging', 'bleed', 'dieline', 'print file', 'cmyk', 'shelf',
+                        'regal', 'mockup', 'print design', 'label', 'barcode'],
+        'Color':       ['color', 'colour', 'hue', 'palette', 'hsl', 'contrast',
+                        'luminan', 'lightness', 'oklch', 'cielab', 'saturati'],
+        'Typography':  ['typography', 'font', 'typeface', 'line height', 'weight', 'scale',
+                        'kerning', 'tracking', 'baseline', 'serif', 'sans'],
+        'Layout':      ['grid', 'layout', 'spacing', 'whitespace', 'optical',
+                        'centering', 'center', 'alignment', 'align',
+                        'margin', 'padding', 'white space', 'composition'],
+        'Psychology':  ['law', 'jakob', 'fitts', 'bias', 'hick', 'gestalt',
+                        'attention', 'perception', 'cognitive', 'salienc', 'focal',
+                        'emphasis', 'visual weight', 'hierarchy', 'inattentional',
+                        'blindness', 'pre-selection', 'default', 'signal', 'consent'],
+        'Components':  ['card', 'radius', 'icon', 'modal', 'tooltip', 'button',
+                        'input', 'form', 'navigation', 'tabs', 'menu', 'breadcrumb'],
         'Performance': ['loading', 'skeleton', 'progress', 'performance'],
-        'Components':  ['card', 'radius', 'icon', 'modal', 'tooltip', 'button', 'padding'],
     }
     for category, words in keywords.items():
         if any(word in t for word in words): return category
@@ -160,6 +183,42 @@ def get_actions(metric_type, status):
         },
     }
     return actions.get(metric_type, {}).get(status, [])
+
+
+def get_follower_weekly(followers_df):
+    """
+    Berechnet Follower-Wachstum der letzten 7 Datentage.
+    Referenz = letzter verfügbarer Tag im Export (nicht datetime.now),
+    weil TikTok-Exporte immer 1–2 Tage hinter dem aktuellen Datum liegen.
+    Gibt (weekly_growth, date_from, date_to) zurück.
+    """
+    if followers_df is None or len(followers_df) == 0:
+        return 0, None, None
+    fs = followers_df.sort_values('Date')
+    max_date = fs['Date'].max()
+    cutoff   = max_date - timedelta(days=7)
+    window   = fs[fs['Date'] > cutoff]
+    weekly   = int(window['Daily Growth'].sum())
+    date_from = window['Date'].min() if len(window) > 0 else None
+    date_to   = window['Date'].max() if len(window) > 0 else None
+    return weekly, date_from, date_to
+
+
+def get_avg_daily_views(overview_df, period_filter_start=None):
+    """
+    Berechnet Avg Daily Views.
+    Filtert Zukunftsdaten (Views == 0 wegen noch nicht vergangener Tage) heraus.
+    Berücksichtigt optionalen Period-Filter.
+    """
+    if overview_df is None or len(overview_df) == 0:
+        return 0
+    # Nur Tage mit echten Views (keine Zukunfts-Nullwerte)
+    real = overview_df[overview_df['Views'] > 0].dropna(subset=['Date'])
+    if period_filter_start is not None:
+        real = real[real['Date'] >= period_filter_start]
+    if len(real) == 0:
+        return 0
+    return int(real['Views'].mean())
 
 
 def generate_insights(filtered_df, viewers_df, followers_df):
@@ -210,9 +269,10 @@ def generate_insights(filtered_df, viewers_df, followers_df):
                 )
 
     if followers_df is not None and len(followers_df) > 0:
-        weekly = int(followers_df.sort_values('Date').tail(7)['Daily Growth'].sum())
+        weekly, date_from, date_to = get_follower_weekly(followers_df)
         if weekly > 0:
-            insights.append(f"👥 <strong>+{weekly:,} Follower</strong> in den letzten 7 Tagen.")
+            label = f" ({fmt_date(date_from, 'numeric')}–{fmt_date(date_to, 'numeric')})" if date_from and date_to else ""
+            insights.append(f"👥 <strong>+{weekly:,} Follower</strong> in den letzten 7 Datentagen{label}.")
 
     return insights
 
@@ -227,8 +287,7 @@ def main():
     followers_path = DATA_DIR / 'followers.csv'
     activity_path  = DATA_DIR / 'activity.csv'
 
-    # ── UPLOAD GUIDE ──────────────────────────────────────────────────────────
-    # Wenn noch keine Daten vorhanden: Anleitung groß & prominent anzeigen
+    # ── UPLOAD GUIDE (erster Start) ───────────────────────────────────────────
     if not content_path.exists():
         st.markdown("## 👆 So startest du")
         st.markdown(
@@ -236,7 +295,6 @@ def main():
             unsafe_allow_html=True
         )
         st.info("Lade die ZIPs in der Sidebar hoch und klicke auf **Process Data**.")
-        # Sidebar trotzdem anzeigen, damit der Upload direkt möglich ist
         st.sidebar.header("📂 Upload Data")
         uploaded_files = st.sidebar.file_uploader("TikTok ZIP files", type=['zip'], accept_multiple_files=True)
         if uploaded_files:
@@ -246,7 +304,7 @@ def main():
                 st.rerun()
         return
 
-    # ── SIDEBAR: Upload (wiederkehrend) + kompakte Anleitung ──────────────────
+    # ── SIDEBAR ───────────────────────────────────────────────────────────────
     st.sidebar.header("📂 Upload Data")
     uploaded_files = st.sidebar.file_uploader("TikTok ZIP files", type=['zip'], accept_multiple_files=True)
 
@@ -259,44 +317,68 @@ def main():
     with st.sidebar.expander("📋 Welche ZIPs hochladen?", expanded=False):
         st.markdown(UPLOAD_GUIDE_MD)
 
-    # ── Sidebar-Status ────────────────────────────────────────────────────────
+    # ── Daten laden ───────────────────────────────────────────────────────────
     content_df   = pd.read_csv(content_path)
     overview_df  = pd.read_csv(overview_path)  if overview_path.exists()  else None
     viewers_df   = pd.read_csv(viewers_path)   if viewers_path.exists()   else None
     followers_df = pd.read_csv(followers_path) if followers_path.exists() else None
     activity_df  = pd.read_csv(activity_path)  if activity_path.exists()  else None
 
-    content_df['Posted Date'] = pd.to_datetime(content_df['Posted Date'], errors='coerce')
-    if overview_df  is not None: overview_df['Date']  = pd.to_datetime(overview_df['Date'],  errors='coerce')
-    if followers_df is not None: followers_df['Date'] = pd.to_datetime(followers_df['Date'], errors='coerce')
-    if viewers_df   is not None: viewers_df['Date']   = pd.to_datetime(viewers_df['Date'],   errors='coerce')
+    # Auf Mitternacht normalisieren — sonst wird der Grenztag (z.B. 8. März)
+    # ausgeschlossen weil seine gespeicherte Zeit 00:00:00 vor datetime.now() liegt
+    now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
+    # Posted Date: String → datetime, timezone-naive, NaT bei Fehlern
+    content_df['Posted Date'] = pd.to_datetime(content_df['Posted Date'], errors='coerce')
+    content_df['Posted Date'] = content_df['Posted Date'].dt.tz_localize(None) \
+        if hasattr(content_df['Posted Date'].dt, 'tz_localize') \
+        and content_df['Posted Date'].dt.tz is not None else content_df['Posted Date']
+
+    if overview_df is not None:
+        overview_df['Date'] = pd.to_datetime(overview_df['Date'], errors='coerce')
+        # Zukunftsdaten rausfiltern — TikTok schreibt Nullwerte für zukünftige Tage in den Export
+        overview_df = overview_df[overview_df['Date'] <= now]
+
+    if followers_df is not None:
+        followers_df['Date'] = pd.to_datetime(followers_df['Date'], errors='coerce')
+        followers_df = followers_df[followers_df['Date'] <= now]
+
+    if viewers_df is not None:
+        viewers_df['Date'] = pd.to_datetime(viewers_df['Date'], errors='coerce')
+
+    # ── Sidebar Status ────────────────────────────────────────────────────────
     st.sidebar.divider()
     st.sidebar.write(f"✅ Videos: {len(content_df)}")
-    if overview_df  is not None: st.sidebar.write(f"✅ Daily: {len(overview_df)} days")
-    if viewers_df   is not None: st.sidebar.write(f"✅ Viewers: {len(viewers_df)} days")
+    if overview_df  is not None: st.sidebar.write(f"✅ Daily: {len(overview_df[overview_df['Views']>0])} Tage mit Daten")
+    if viewers_df   is not None: st.sidebar.write(f"✅ Viewers: {len(viewers_df)} Tage")
     else:                        st.sidebar.write("⚠️ Viewers: nicht geladen")
-    if followers_df is not None: st.sidebar.write(f"✅ Followers: {len(followers_df)} days")
+    if followers_df is not None:
+        max_fol = followers_df['Date'].max()
+        st.sidebar.write(f"✅ Followers: Daten bis {fmt_date(max_fol, 'full')}")
     if activity_df  is not None: st.sidebar.write("✅ Activity: ✓")
 
+    # ── Period Filter ─────────────────────────────────────────────────────────
     period = st.radio("📅 Period", ['All Time', 'Last 30 Days', 'Last 7 Days'], horizontal=True)
     filtered_df = content_df.copy()
+    period_start = None
     if period == 'Last 7 Days':
-        filtered_df = filtered_df[filtered_df['Posted Date'] >= datetime.now() - timedelta(days=7)]
+        period_start = now - timedelta(days=7)
+        filtered_df = filtered_df[filtered_df['Posted Date'] >= period_start]
     elif period == 'Last 30 Days':
-        filtered_df = filtered_df[filtered_df['Posted Date'] >= datetime.now() - timedelta(days=30)]
+        period_start = now - timedelta(days=30)
+        filtered_df = filtered_df[filtered_df['Posted Date'] >= period_start]
 
     if len(filtered_df) == 0:
-        st.warning(f"⚠️ No videos in {period}")
+        st.warning(f"⚠️ Keine Videos im Zeitraum {period}")
         return
 
-    # AUTO-INSIGHTS
+    # ── AUTO-INSIGHTS ─────────────────────────────────────────────────────────
     st.subheader("🔍 Diese Woche beachten")
     insights = generate_insights(filtered_df, viewers_df, followers_df)
     st.markdown("<div class='insight-box'>" + "<br>".join(insights) + "</div>", unsafe_allow_html=True)
     st.divider()
 
-    # METRICS
+    # ── METRICS ───────────────────────────────────────────────────────────────
     st.subheader("🎯 Performance Metrics")
     avg_share = filtered_df['Share Rate'].mean()
     cc, status = get_metric_color_status(avg_share, 'share_rate')
@@ -316,32 +398,47 @@ def main():
         st.markdown(f'<div class="{ac}">{a}</div>', unsafe_allow_html=True)
     st.divider()
 
-    # OVERVIEW
+    # ── OVERVIEW ──────────────────────────────────────────────────────────────
     st.subheader("📊 Overview")
     col1, col2, col3, col4 = st.columns(4)
+
     with col1:
         st.metric("Total Views", f"{int(filtered_df['Video Views'].sum()):,}")
+
     with col2:
         if followers_df is not None:
-            fs     = followers_df.sort_values('Date', ascending=False)
-            weekly = int(followers_df.sort_values('Date').tail(7)['Daily Growth'].sum())
-            st.metric("Followers", f"{int(fs.iloc[0]['Followers']):,}", f"+{weekly} (7d)")
+            weekly, date_from, date_to = get_follower_weekly(followers_df)
+            fs_latest = followers_df.sort_values('Date').dropna(subset=['Date'])
+            latest_followers = int(fs_latest.iloc[-1]['Followers']) if len(fs_latest) > 0 else 0
+            # Datumsbereich als Delta-Label anzeigen
+            if date_from and date_to:
+                delta_label = f"+{weekly} ({fmt_date(date_from, 'numeric')}–{fmt_date(date_to, 'numeric')})"
+            else:
+                delta_label = f"+{weekly} (7d)"
+            st.metric("Followers", f"{latest_followers:,}", delta_label)
         else:
             st.metric("Followers", "—")
+
     with col3:
-        if overview_df is not None:
-            st.metric("Avg Daily Views", f"{int(overview_df['Views'].mean()):,}")
+        # Avg Daily Views: nur echte Tage (Views > 0), period-gefiltert
+        avg_daily = get_avg_daily_views(overview_df, period_start)
+        if avg_daily > 0:
+            period_label = period.replace('Last ', '').replace(' Days', 'd') if period != 'All Time' else 'All Time'
+            st.metric("Avg Daily Views", f"{avg_daily:,}", help=f"Nur Tage mit Views > 0 · {period_label}")
         else:
             st.metric("Videos", len(filtered_df))
+
     with col4:
         if viewers_df is not None:
-            ret_pct = viewers_df['Returning'].sum() / viewers_df['Total'].sum() * 100
+            total_v = viewers_df['Total'].sum()
+            ret_v   = viewers_df['Returning'].sum()
+            ret_pct = ret_v / total_v * 100 if total_v > 0 else 0
             st.metric("Returning Viewers", f"{ret_pct:.1f}%",
                       "✅ Healthy" if ret_pct >= 40 else "⚠️ Low", help="Ziel: 40%+")
         else:
             st.metric("Avg Views/Video", f"{int(filtered_df['Video Views'].mean()):,}")
 
-    # VIEWERS
+    # ── VIEWERS ───────────────────────────────────────────────────────────────
     if viewers_df is not None:
         st.subheader("👁️ New vs. Returning Viewers")
         total_new = viewers_df['New'].sum()
@@ -362,21 +459,21 @@ def main():
     else:
         st.info("📌 **Viewers-Daten fehlen** — Lade das Viewers ZIP (365 Tage) hoch, um New vs. Returning zu sehen.")
 
-    # DAILY VIEWS
+    # ── DAILY VIEWS ───────────────────────────────────────────────────────────
     if overview_df is not None:
         st.subheader("📈 Daily Views")
-        ov = overview_df.sort_values('Date')
+        ov = overview_df[overview_df['Views'] > 0].sort_values('Date')
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=ov['Date'], y=ov['Views'], mode='lines+markers',
                                  line=dict(color='#007AFF', width=3)))
         fig.update_layout(height=300, margin=dict(l=0,r=0,t=10,b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-    # FOLLOWERS
+    # ── FOLLOWERS ─────────────────────────────────────────────────────────────
     if followers_df is not None:
         st.subheader("👥 Follower Growth")
         col1, col2 = st.columns(2)
-        fs = followers_df.sort_values('Date')
+        fs = followers_df[followers_df['Followers'] > 0].sort_values('Date')
         with col1:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=fs['Date'], y=fs['Followers'], mode='lines+markers',
@@ -389,7 +486,7 @@ def main():
             fig.update_layout(height=250, margin=dict(l=0,r=0,t=10,b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-    # BEST DAY + BEST TIME side by side
+    # ── BEST DAY + BEST TIME ──────────────────────────────────────────────────
     col_day, col_time = st.columns(2)
 
     with col_day:
@@ -417,12 +514,21 @@ def main():
             hourly = activity_df.groupby('Hour')['Active'].mean().reset_index()
             hourly.columns = ['Hour', 'Avg Active']
             peak_hour = int(hourly.loc[hourly['Avg Active'].idxmax(), 'Hour'])
-            post_hour = (peak_hour - 1) % 24
-            st.caption(f"📌 Follower-Peak: **{peak_hour}:00 Uhr** → optimaler Post-Zeitpunkt: **{post_hour}:00 Uhr**")
+
+            # 30 Minuten vor dem Peak — Video braucht Anlaufzeit bevor
+            # Follower-Aktivität ihr Maximum erreicht (Quelle: TikTok Creator Guides)
+            post_hour     = (peak_hour - 1) % 24  # volle Stunde davor
+            post_time_str = f"{post_hour}:30"       # :30 = halbe Stunde vor dem Peak
+
+            st.caption(
+                f"📌 Follower-Peak: **{peak_hour}:00 Uhr** → "
+                f"optimaler Post-Zeitpunkt: **{post_time_str} Uhr** "
+                f"(30 Min. vor Peak)"
+            )
             fig = px.bar(hourly, x='Hour', y='Avg Active',
                          color='Avg Active', color_continuous_scale=['#1C1C1E','#FF9500'])
             fig.add_vline(x=post_hour, line_dash='dash', line_color='#FF9500',
-                          annotation_text=f"Poste hier ({post_hour}:00)",
+                          annotation_text=f"Poste hier (~{post_time_str})",
                           annotation_position="top right")
             fig.update_layout(height=300, showlegend=False, margin=dict(l=0,r=0,t=30,b=0),
                               xaxis=dict(tickmode='linear', dtick=2))
@@ -430,7 +536,7 @@ def main():
         else:
             st.info("Lade das Followers-ZIP hoch — enthält FollowerActivity.csv mit Stunden-Daten.")
 
-    # TOP 5
+    # ── TOP 5 ─────────────────────────────────────────────────────────────────
     st.subheader("🏆 Top 5 Videos")
     top_5 = filtered_df.nlargest(5, 'Video Views')[
         ['Video Title', 'Video Views', 'Share Rate', 'Engagement Rate', 'Category']
@@ -441,7 +547,7 @@ def main():
     top_5['Video Title']     = top_5['Video Title'].str[:60] + '…'
     st.dataframe(top_5, use_container_width=True, hide_index=True)
 
-    # CATEGORY
+    # ── CATEGORY ──────────────────────────────────────────────────────────────
     st.subheader("📁 Category Performance")
     cat_stats = (filtered_df.groupby('Category')
                              .agg(Avg_Views=('Video Views', 'mean'),
@@ -497,10 +603,11 @@ def _process_uploads(uploaded_files):
         df['Date'] = smart_parse_dates(df['Date'])
         for col in ['Views', 'Profile Views', 'Likes', 'Comments', 'Shares']:
             if col in df.columns: df[col] = clean_numeric(df[col])
+        # Zukunftsdaten beim Speichern bereits rausfiltern
         df = df[df['Views'] > 0].dropna(subset=['Date'])
         df = df.drop_duplicates(subset=['Date'], keep='last')
         df.to_csv(DATA_DIR / 'overview.csv', index=False)
-        st.sidebar.success(f"✅ Overview: {len(df)} days")
+        st.sidebar.success(f"✅ Overview: {len(df)} Tage mit Daten")
 
     if all_viewers:
         df = pd.concat(all_viewers, ignore_index=True)
@@ -511,7 +618,7 @@ def _process_uploads(uploaded_files):
         df = df[df['Total'] > 0].dropna(subset=['Date'])
         df = df.drop_duplicates(subset=['Date'], keep='last')
         df.to_csv(DATA_DIR / 'viewers.csv', index=False)
-        st.sidebar.success(f"✅ Viewers: {len(df)} days")
+        st.sidebar.success(f"✅ Viewers: {len(df)} Tage")
 
     if all_followers:
         df = pd.concat(all_followers, ignore_index=True)
@@ -522,7 +629,7 @@ def _process_uploads(uploaded_files):
         df = df[df['Followers'] > 0].dropna(subset=['Date'])
         df = df.drop_duplicates(subset=['Date'], keep='last')
         df.to_csv(DATA_DIR / 'followers.csv', index=False)
-        st.sidebar.success(f"✅ Followers: {len(df)} days")
+        st.sidebar.success(f"✅ Followers: Daten bis {fmt_date(df['Date'].max(), 'full')}")
 
     if all_activity:
         df = pd.concat(all_activity, ignore_index=True)
@@ -540,7 +647,7 @@ def _process_uploads(uploaded_files):
             df.to_csv(DATA_DIR / 'activity.csv', index=False)
             st.sidebar.success("✅ Activity: ✓")
 
-    st.sidebar.success("🎉 Done!")
+    st.sidebar.success("🎉 Fertig! Daten aktualisiert.")
 
 
 if __name__ == "__main__":

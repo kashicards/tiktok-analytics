@@ -22,6 +22,8 @@ st.markdown("""
 .insight-box      { background: #1C1C2E; padding: 16px; border-radius: 10px; border-left: 4px solid #007AFF; margin: 8px 0; line-height: 1.9; }
 .upload-guide     { background: #1C1C2E; padding: 16px; border-radius: 10px; font-size: 0.88rem; line-height: 1.8; }
 .upload-hero      { background: #1C1C2E; padding: 24px; border-radius: 12px; border: 1px solid #2C2C3E; margin-bottom: 24px; }
+.filter-info      { background: #1C1C2E; padding: 10px 16px; border-radius: 8px; border-left: 4px solid #007AFF;
+                    font-size: 0.85rem; color: #8E8E93; margin-bottom: 16px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -126,7 +128,6 @@ def smart_parse_dates(series):
 def categorize_topic(title):
     if pd.isna(title): return 'Other'
     t = str(title).lower()
-    # Reihenfolge wichtig — spezifischere Kategorien zuerst
     keywords = {
         'Packaging':   ['packaging', 'bleed', 'dieline', 'print file', 'cmyk', 'shelf',
                         'regal', 'mockup', 'print design', 'label', 'barcode'],
@@ -140,7 +141,10 @@ def categorize_topic(title):
         'Psychology':  ['law', 'jakob', 'fitts', 'bias', 'hick', 'gestalt',
                         'attention', 'perception', 'cognitive', 'salienc', 'focal',
                         'emphasis', 'visual weight', 'hierarchy', 'inattentional',
-                        'blindness', 'pre-selection', 'default', 'signal', 'consent'],
+                        'blindness', 'pre-selection', 'default', 'signal', 'consent',
+                        'decoy', 'anchoring', 'priming', 'scarcity', 'social proof',
+                        'reciprocity', 'loss aversion', 'framing', 'nudge', 'mental model',
+                        'heuristic', 'choice architecture', 'paradox of choice'],
         'Components':  ['card', 'radius', 'icon', 'modal', 'tooltip', 'button',
                         'input', 'form', 'navigation', 'tabs', 'menu', 'breadcrumb'],
         'Performance': ['loading', 'skeleton', 'progress', 'performance'],
@@ -185,34 +189,56 @@ def get_actions(metric_type, status):
     return actions.get(metric_type, {}).get(status, [])
 
 
-def get_follower_weekly(followers_df):
+def get_follower_growth(followers_df, period, now):
     """
-    Berechnet Follower-Wachstum der letzten 7 Datentage.
-    Referenz = letzter verfügbarer Tag im Export (nicht datetime.now),
-    weil TikTok-Exporte immer 1–2 Tage hinter dem aktuellen Datum liegen.
-    Gibt (weekly_growth, date_from, date_to) zurück.
+    Period-aware Follower-Wachstum.
+    Last 7 Days   → letzte 7 Datentage ab max_date
+    Last 30 Days  → letzte 30 Kalendertage
+    Last 3 Months → letzte 90 Kalendertage
+    All Time      → letzter Wert minus erster Wert
+    Gibt (growth, date_from, date_to, delta_label) zurück.
     """
     if followers_df is None or len(followers_df) == 0:
-        return 0, None, None
-    fs = followers_df.sort_values('Date')
-    max_date = fs['Date'].max()
-    cutoff   = max_date - timedelta(days=7)
-    window   = fs[fs['Date'] > cutoff]
-    weekly   = int(window['Daily Growth'].sum())
-    date_from = window['Date'].min() if len(window) > 0 else None
-    date_to   = window['Date'].max() if len(window) > 0 else None
-    return weekly, date_from, date_to
+        return 0, None, None, "—"
+    fs = followers_df.sort_values('Date').dropna(subset=['Date'])
+    if len(fs) == 0:
+        return 0, None, None, "—"
+
+    if period == 'Last 7 Days':
+        max_date = fs['Date'].max()
+        cutoff   = max_date - timedelta(days=7)
+        window   = fs[fs['Date'] > cutoff]
+        growth   = int(window['Daily Growth'].sum())
+        d_from, d_to = window['Date'].min(), window['Date'].max()
+        label = f"+{growth} ({fmt_date(d_from,'numeric')}–{fmt_date(d_to,'numeric')})"
+
+    elif period == 'Last 30 Days':
+        cutoff = now - timedelta(days=30)
+        window = fs[fs['Date'] >= cutoff]
+        growth = int(window['Daily Growth'].sum())
+        d_from, d_to = window['Date'].min(), window['Date'].max()
+        label = f"+{growth} (30d)"
+
+    elif period == 'Last 3 Months':
+        cutoff = now - timedelta(days=90)
+        window = fs[fs['Date'] >= cutoff]
+        growth = int(window['Daily Growth'].sum())
+        d_from, d_to = window['Date'].min(), window['Date'].max()
+        label = f"+{growth} (3 Monate)"
+
+    else:  # All Time
+        first  = int(fs.iloc[0]['Followers'])
+        last   = int(fs.iloc[-1]['Followers'])
+        growth = last - first
+        d_from, d_to = fs['Date'].min(), fs['Date'].max()
+        label = f"+{growth} (gesamt)"
+
+    return growth, d_from, d_to, label
 
 
 def get_avg_daily_views(overview_df, period_filter_start=None):
-    """
-    Berechnet Avg Daily Views.
-    Filtert Zukunftsdaten (Views == 0 wegen noch nicht vergangener Tage) heraus.
-    Berücksichtigt optionalen Period-Filter.
-    """
     if overview_df is None or len(overview_df) == 0:
         return 0
-    # Nur Tage mit echten Views (keine Zukunfts-Nullwerte)
     real = overview_df[overview_df['Views'] > 0].dropna(subset=['Date'])
     if period_filter_start is not None:
         real = real[real['Date'] >= period_filter_start]
@@ -221,7 +247,7 @@ def get_avg_daily_views(overview_df, period_filter_start=None):
     return int(real['Views'].mean())
 
 
-def generate_insights(filtered_df, viewers_df, followers_df):
+def generate_insights(filtered_df, viewers_df, followers_df, period, now):
     insights = []
     if len(filtered_df) > 0:
         top = filtered_df.nlargest(1, 'Video Views').iloc[0]
@@ -269,12 +295,68 @@ def generate_insights(filtered_df, viewers_df, followers_df):
                 )
 
     if followers_df is not None and len(followers_df) > 0:
-        weekly, date_from, date_to = get_follower_weekly(followers_df)
-        if weekly > 0:
-            label = f" ({fmt_date(date_from, 'numeric')}–{fmt_date(date_to, 'numeric')})" if date_from and date_to else ""
-            insights.append(f"👥 <strong>+{weekly:,} Follower</strong> in den letzten 7 Datentagen{label}.")
+        growth, d_from, d_to, delta_label = get_follower_growth(followers_df, period, now)
+        period_text = {
+            'Last 7 Days':   'letzten 7 Datentagen',
+            'Last 30 Days':  'letzten 30 Tagen',
+            'Last 3 Months': 'letzten 3 Monaten',
+            'All Time':      'gesamten Zeitraum',
+        }.get(period, 'ausgewählten Zeitraum')
+        if growth > 0:
+            insights.append(f"👥 <strong>{delta_label} Follower</strong> im {period_text}.")
 
     return insights
+
+
+def apply_period_filter(content_df, period, now):
+    """
+    Filterlogik je nach Period:
+
+    'Last 7 Days'   → Videos >24h alt, davon die neuesten 4
+    'Last 30 Days'  → Videos der letzten 30 Tage (normaler Datumsfilter)
+    'Last 3 Months' → Videos der letzten 90 Tage
+    'All Time'      → alle Videos
+
+    Gibt (filtered_df, period_start, filter_hint) zurück.
+    filter_hint ist ein String für den Info-Banner (None = kein Banner nötig).
+    """
+    if period == 'Last 7 Days':
+        cutoff_24h  = datetime.now() - timedelta(hours=24)
+        period_start = now - timedelta(days=7)
+        # Nur Videos innerhalb der 7 Tage UND älter als 24h
+        base = content_df[
+            content_df['Posted Date'].notna() &
+            (content_df['Posted Date'] >= period_start) &
+            (content_df['Posted Date'] <= cutoff_24h)
+        ].copy()
+        n_excluded = len(content_df[
+            content_df['Posted Date'].notna() &
+            (content_df['Posted Date'] > cutoff_24h)
+        ])
+        filtered = base.sort_values('Posted Date', ascending=False).head(4)
+        hint = f"📌 <strong>Letzte 7 Tage → 4 Videos, >24h</strong>"
+        if n_excluded > 0:
+            hint += f" · {n_excluded} Video(s) <24h ausgeschlossen"
+        return filtered, period_start, hint
+
+    elif period == 'Last 30 Days':
+        period_start = now - timedelta(days=30)
+        filtered = content_df[
+            content_df['Posted Date'].notna() &
+            (content_df['Posted Date'] >= period_start)
+        ].copy()
+        return filtered, period_start, None
+
+    elif period == 'Last 3 Months':
+        period_start = now - timedelta(days=90)
+        filtered = content_df[
+            content_df['Posted Date'].notna() &
+            (content_df['Posted Date'] >= period_start)
+        ].copy()
+        return filtered, period_start, None
+
+    else:  # All Time
+        return content_df.copy(), None, None
 
 
 def main():
@@ -324,11 +406,8 @@ def main():
     followers_df = pd.read_csv(followers_path) if followers_path.exists() else None
     activity_df  = pd.read_csv(activity_path)  if activity_path.exists()  else None
 
-    # Auf Mitternacht normalisieren — sonst wird der Grenztag (z.B. 8. März)
-    # ausgeschlossen weil seine gespeicherte Zeit 00:00:00 vor datetime.now() liegt
     now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Posted Date: String → datetime, timezone-naive, NaT bei Fehlern
     content_df['Posted Date'] = pd.to_datetime(content_df['Posted Date'], errors='coerce')
     content_df['Posted Date'] = content_df['Posted Date'].dt.tz_localize(None) \
         if hasattr(content_df['Posted Date'].dt, 'tz_localize') \
@@ -336,7 +415,6 @@ def main():
 
     if overview_df is not None:
         overview_df['Date'] = pd.to_datetime(overview_df['Date'], errors='coerce')
-        # Zukunftsdaten rausfiltern — TikTok schreibt Nullwerte für zukünftige Tage in den Export
         overview_df = overview_df[overview_df['Date'] <= now]
 
     if followers_df is not None:
@@ -348,7 +426,7 @@ def main():
 
     # ── Sidebar Status ────────────────────────────────────────────────────────
     st.sidebar.divider()
-    st.sidebar.write(f"✅ Videos: {len(content_df)}")
+    st.sidebar.write(f"✅ Videos gesamt: {len(content_df)}")
     if overview_df  is not None: st.sidebar.write(f"✅ Daily: {len(overview_df[overview_df['Views']>0])} Tage mit Daten")
     if viewers_df   is not None: st.sidebar.write(f"✅ Viewers: {len(viewers_df)} Tage")
     else:                        st.sidebar.write("⚠️ Viewers: nicht geladen")
@@ -358,23 +436,25 @@ def main():
     if activity_df  is not None: st.sidebar.write("✅ Activity: ✓")
 
     # ── Period Filter ─────────────────────────────────────────────────────────
-    period = st.radio("📅 Period", ['All Time', 'Last 30 Days', 'Last 7 Days'], horizontal=True)
-    filtered_df = content_df.copy()
-    period_start = None
-    if period == 'Last 7 Days':
-        period_start = now - timedelta(days=7)
-        filtered_df = filtered_df[filtered_df['Posted Date'] >= period_start]
-    elif period == 'Last 30 Days':
-        period_start = now - timedelta(days=30)
-        filtered_df = filtered_df[filtered_df['Posted Date'] >= period_start]
+    period = st.radio(
+        "📅 Period",
+        ['All Time', 'Last 3 Months', 'Last 30 Days', 'Last 7 Days'],
+        horizontal=True
+    )
+
+    filtered_df, period_start, filter_hint = apply_period_filter(content_df, period, now)
 
     if len(filtered_df) == 0:
         st.warning(f"⚠️ Keine Videos im Zeitraum {period}")
         return
 
+    # Banner nur für 7-Tage-Filter (erklärt die 4-Video-Logik)
+    if filter_hint:
+        st.markdown(f"<div class='filter-info'>{filter_hint}</div>", unsafe_allow_html=True)
+
     # ── AUTO-INSIGHTS ─────────────────────────────────────────────────────────
     st.subheader("🔍 Diese Woche beachten")
-    insights = generate_insights(filtered_df, viewers_df, followers_df)
+    insights = generate_insights(filtered_df, viewers_df, followers_df, period, now)
     st.markdown("<div class='insight-box'>" + "<br>".join(insights) + "</div>", unsafe_allow_html=True)
     st.divider()
 
@@ -403,30 +483,26 @@ def main():
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Total Views", f"{int(filtered_df['Video Views'].sum()):,}")
+        views_label = "Total Views (4 Videos)" if period == 'Last 7 Days' else "Total Views"
+        st.metric(views_label, f"{int(filtered_df['Video Views'].sum()):,}")
 
     with col2:
         if followers_df is not None:
-            weekly, date_from, date_to = get_follower_weekly(followers_df)
             fs_latest = followers_df.sort_values('Date').dropna(subset=['Date'])
             latest_followers = int(fs_latest.iloc[-1]['Followers']) if len(fs_latest) > 0 else 0
-            # Datumsbereich als Delta-Label anzeigen
-            if date_from and date_to:
-                delta_label = f"+{weekly} ({fmt_date(date_from, 'numeric')}–{fmt_date(date_to, 'numeric')})"
-            else:
-                delta_label = f"+{weekly} (7d)"
+            growth, _, _, delta_label = get_follower_growth(followers_df, period, now)
             st.metric("Followers", f"{latest_followers:,}", delta_label)
         else:
             st.metric("Followers", "—")
 
     with col3:
-        # Avg Daily Views: nur echte Tage (Views > 0), period-gefiltert
         avg_daily = get_avg_daily_views(overview_df, period_start)
+        period_label = {'Last 7 Days': '7d', 'Last 30 Days': '30d',
+                        'Last 3 Months': '3 Monate'}.get(period, 'All Time')
         if avg_daily > 0:
-            period_label = period.replace('Last ', '').replace(' Days', 'd') if period != 'All Time' else 'All Time'
             st.metric("Avg Daily Views", f"{avg_daily:,}", help=f"Nur Tage mit Views > 0 · {period_label}")
         else:
-            st.metric("Videos", len(filtered_df))
+            st.metric("Avg Views/Video", f"{int(filtered_df['Video Views'].mean()):,}")
 
     with col4:
         if viewers_df is not None:
@@ -436,7 +512,7 @@ def main():
             st.metric("Returning Viewers", f"{ret_pct:.1f}%",
                       "✅ Healthy" if ret_pct >= 40 else "⚠️ Low", help="Ziel: 40%+")
         else:
-            st.metric("Avg Views/Video", f"{int(filtered_df['Video Views'].mean()):,}")
+            st.metric("Videos analysiert", len(filtered_df))
 
     # ── VIEWERS ───────────────────────────────────────────────────────────────
     if viewers_df is not None:
@@ -491,11 +567,18 @@ def main():
 
     with col_day:
         st.subheader("📅 Best Day to Post")
-        if filtered_df['Posted Date'].notna().sum() > 3:
+        # Für Wochentag-Analyse alle Videos >24h nutzen (nicht nur die 4),
+        # damit genug Datenpunkte für eine statistisch sinnvolle Auswertung vorhanden sind
+        cutoff_24h = datetime.now() - timedelta(hours=24)
+        all_valid = content_df[
+            content_df['Posted Date'].notna() &
+            (content_df['Posted Date'] <= cutoff_24h)
+        ].copy()
+
+        if all_valid['Posted Date'].notna().sum() > 3:
             day_map = {0:'Mo', 1:'Di', 2:'Mi', 3:'Do', 4:'Fr', 5:'Sa', 6:'So'}
-            fd = filtered_df.copy()
-            fd['Weekday'] = fd['Posted Date'].dt.dayofweek.map(day_map)
-            day_stats = (fd.groupby('Weekday')['Video Views'].mean()
+            all_valid['Weekday'] = all_valid['Posted Date'].dt.dayofweek.map(day_map)
+            day_stats = (all_valid.groupby('Weekday')['Video Views'].mean()
                            .reindex(['Mo','Di','Mi','Do','Fr','Sa','So'])
                            .fillna(0).reset_index())
             day_stats.columns = ['Day', 'Avg Views']
@@ -514,12 +597,8 @@ def main():
             hourly = activity_df.groupby('Hour')['Active'].mean().reset_index()
             hourly.columns = ['Hour', 'Avg Active']
             peak_hour = int(hourly.loc[hourly['Avg Active'].idxmax(), 'Hour'])
-
-            # 30 Minuten vor dem Peak — Video braucht Anlaufzeit bevor
-            # Follower-Aktivität ihr Maximum erreicht (Quelle: TikTok Creator Guides)
-            post_hour     = (peak_hour - 1) % 24  # volle Stunde davor
-            post_time_str = f"{post_hour}:30"       # :30 = halbe Stunde vor dem Peak
-
+            post_hour     = (peak_hour - 1) % 24
+            post_time_str = f"{post_hour}:30"
             st.caption(
                 f"📌 Follower-Peak: **{peak_hour}:00 Uhr** → "
                 f"optimaler Post-Zeitpunkt: **{post_time_str} Uhr** "
@@ -536,16 +615,23 @@ def main():
         else:
             st.info("Lade das Followers-ZIP hoch — enthält FollowerActivity.csv mit Stunden-Daten.")
 
-    # ── TOP 5 ─────────────────────────────────────────────────────────────────
-    st.subheader("🏆 Top 5 Videos")
-    top_5 = filtered_df.nlargest(5, 'Video Views')[
-        ['Video Title', 'Video Views', 'Share Rate', 'Engagement Rate', 'Category']
-    ].copy()
-    top_5['Video Views']     = top_5['Video Views'].apply(lambda x: f"{int(x):,}")
-    top_5['Share Rate']      = top_5['Share Rate'].apply(lambda x: f"{x:.2f}%")
-    top_5['Engagement Rate'] = top_5['Engagement Rate'].apply(lambda x: f"{x:.1f}%")
-    top_5['Video Title']     = top_5['Video Title'].str[:60] + '…'
-    st.dataframe(top_5, use_container_width=True, hide_index=True)
+    # ── TOP VIDEOS ────────────────────────────────────────────────────────────
+    top_label = {
+        'Last 7 Days':    '🏆 Analysierte Videos (letzte 4, >24h)',
+        'Last 30 Days':   '🏆 Top Videos — letzte 30 Tage',
+        'Last 3 Months':  '🏆 Top Videos — letztes Quartal',
+        'All Time':       '🏆 Top Videos — All Time',
+    }.get(period, '🏆 Top Videos')
+    st.subheader(top_label)
+    top_n = filtered_df.sort_values('Video Views', ascending=False).head(
+        4 if period == 'Last 7 Days' else 5
+    )[['Video Title', 'Posted Date', 'Video Views', 'Share Rate', 'Engagement Rate', 'Category']].copy()
+    top_n['Posted Date']     = top_n['Posted Date'].apply(lambda d: fmt_date(d, 'full'))
+    top_n['Video Views']     = top_n['Video Views'].apply(lambda x: f"{int(x):,}")
+    top_n['Share Rate']      = top_n['Share Rate'].apply(lambda x: f"{x:.2f}%")
+    top_n['Engagement Rate'] = top_n['Engagement Rate'].apply(lambda x: f"{x:.1f}%")
+    top_n['Video Title']     = top_n['Video Title'].str[:60] + '…'
+    st.dataframe(top_n, use_container_width=True, hide_index=True)
 
     # ── CATEGORY ──────────────────────────────────────────────────────────────
     st.subheader("📁 Category Performance")
@@ -603,7 +689,6 @@ def _process_uploads(uploaded_files):
         df['Date'] = smart_parse_dates(df['Date'])
         for col in ['Views', 'Profile Views', 'Likes', 'Comments', 'Shares']:
             if col in df.columns: df[col] = clean_numeric(df[col])
-        # Zukunftsdaten beim Speichern bereits rausfiltern
         df = df[df['Views'] > 0].dropna(subset=['Date'])
         df = df.drop_duplicates(subset=['Date'], keep='last')
         df.to_csv(DATA_DIR / 'overview.csv', index=False)

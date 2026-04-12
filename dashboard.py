@@ -133,14 +133,6 @@ def smart_parse_dates(series):
 
 
 def categorize_topic(title):
-    """
-    Fixed priority order. Key changes vs old version:
-    - 'emphasis', 'visual weight', 'hierarchy', 'focal', 'signal' removed from Psychology
-      → moved to Typography / Layout where they belong semantically
-    - Psychology only covers actual cognitive/behavioral concepts
-    - 'bold', 'italic', 'emphasis', 'legib', 'readab' → Typography
-    - 'visual weight', 'hierarchy', 'focal', 'asymmetric', 'balance' → Layout
-    """
     if pd.isna(title): return 'Other'
     t = str(title).lower()
     keyword_map = {
@@ -424,7 +416,6 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
     top  = filtered_df.nlargest(1,  'Video Views').iloc[0]
     flop = filtered_df.nsmallest(1, 'Video Views').iloc[0]
 
-    # Video rows sorted oldest → newest (chronological like the callout format)
     vids = filtered_df.sort_values('Posted Date').copy()
     table_rows = []
     for _, row in vids.iterrows():
@@ -642,6 +633,7 @@ def main():
     st.divider()
 
     # ── SHARE RATE TREND ──────────────────────────────────────────────────────
+    # Intentionally uses all videos — shows full chronological trend line
     st.subheader("📈 Share Rate Trend (alle Videos chronologisch)")
     cutoff_trend = datetime.now() - timedelta(hours=24)
     trend_df = content_df[
@@ -680,15 +672,26 @@ def main():
     with col_day:
         st.subheader("📅 Best Day to Post")
         cutoff_24h_day = datetime.now() - timedelta(hours=24)
-        all_valid = content_df[
-            content_df['Posted Date'].notna() &
-            (content_df['Posted Date'] <= cutoff_24h_day)
+
+        # FIX: Use filtered_df for period-sensitive analysis.
+        # Last 7 Days only has 4 videos max → not enough per weekday → fall back to All Time.
+        MIN_VIDEOS_FOR_DAY_CHART = 7
+        if period == 'Last 7 Days' or len(filtered_df) < MIN_VIDEOS_FOR_DAY_CHART:
+            day_source_df = content_df.copy()
+            st.caption("📌 Zu wenig Videos im gewählten Zeitraum — zeigt All Time Daten.")
+        else:
+            day_source_df = filtered_df.copy()
+
+        day_valid = day_source_df[
+            day_source_df['Posted Date'].notna() &
+            (day_source_df['Posted Date'] <= cutoff_24h_day)
         ].copy()
-        if all_valid['Posted Date'].notna().sum() > 3:
-            all_valid['Weekday'] = all_valid['Posted Date'].dt.dayofweek.map(
+
+        if day_valid['Posted Date'].notna().sum() > 3:
+            day_valid['Weekday'] = day_valid['Posted Date'].dt.dayofweek.map(
                 {0:'Mo', 1:'Di', 2:'Mi', 3:'Do', 4:'Fr', 5:'Sa', 6:'So'}
             )
-            day_stats = (all_valid.groupby('Weekday')['Video Views'].mean()
+            day_stats = (day_valid.groupby('Weekday')['Video Views'].mean()
                            .reindex(['Mo','Di','Mi','Do','Fr','Sa','So'])
                            .fillna(0).reset_index())
             day_stats.columns = ['Day', 'Avg Views']
@@ -703,13 +706,18 @@ def main():
 
     with col_time:
         st.subheader("🕐 Best Time to Post")
+        # NOTE: activity_df is aggregate follower-activity data (when your audience is online).
+        # It does not change with period filter — this is correct by design.
         if activity_df is not None and 'Hour' in activity_df.columns:
             hourly    = activity_df.groupby('Hour')['Active'].mean().reset_index()
             hourly.columns = ['Hour', 'Avg Active']
             peak_hour = int(hourly.loc[hourly['Avg Active'].idxmax(), 'Hour'])
             post_hour = (peak_hour - 1) % 24
             post_str  = f"{post_hour}:30"
-            st.caption(f"📌 Follower-Peak: **{peak_hour}:00** → optimaler Post: **{post_str}** (30 Min. vor Peak)")
+            st.caption(
+                f"📌 Follower-Peak: **{peak_hour}:00** → optimaler Post: **{post_str}** "
+                f"(30 Min. vor Peak) · _Basiert auf Follower-Aktivität, unabhängig vom Period-Filter_"
+            )
             fig = px.bar(hourly, x='Hour', y='Avg Active',
                          color='Avg Active', color_continuous_scale=['#1C1C1E', '#FF9500'])
             fig.add_vline(x=post_hour, line_dash='dash', line_color='#FF9500',
@@ -769,6 +777,7 @@ def main():
     # ── HOOK-TYP EDITOR ───────────────────────────────────────────────────────
     with st.expander("🏷️ Hook-Typ taggen", expanded=False):
         st.caption("Tags werden lokal gespeichert und erscheinen im Callout und in der Hook-Analyse.")
+        # Editor always shows last 12 videos regardless of filter — intentional for tagging workflow
         edit_df  = filtered_df if period == 'Last 7 Days' else \
                    content_df.sort_values('Posted Date', ascending=False).head(12)
         ht_changed = False
@@ -812,12 +821,26 @@ def main():
             st.success("✅ Gespeichert — wird beim nächsten Reload angewendet")
 
     # ── HOOK-TYP ANALYSE ──────────────────────────────────────────────────────
-    if 'Video Link' in content_df.columns:
-        ct = content_df.copy()
+    # FIX: Use filtered_df instead of content_df so the analysis respects the period filter.
+    # Falls back to content_df if filtered period has fewer than 3 tagged videos.
+    if 'Video Link' in filtered_df.columns:
+        ct = filtered_df.copy()
         ct['Hook Type'] = ct['Video Link'].map(hook_types).fillna('—')
-        tagged = ct[ct['Hook Type'].isin(HOOK_TYPE_OPTIONS[1:])]  # exclude "—"
+        tagged = ct[ct['Hook Type'].isin(HOOK_TYPE_OPTIONS[1:])]
+
+        # If the current period has too few tagged videos, fall back to all-time
+        if len(tagged) < 3 and period != 'All Time':
+            ct_all = content_df.copy()
+            ct_all['Hook Type'] = ct_all['Video Link'].map(hook_types).fillna('—')
+            tagged = ct_all[ct_all['Hook Type'].isin(HOOK_TYPE_OPTIONS[1:])]
+            hook_fallback = True
+        else:
+            hook_fallback = False
+
         if len(tagged) >= 3:
             st.subheader("🏷️ Hook-Typ Performance")
+            if hook_fallback:
+                st.caption("📌 Zu wenig getaggte Videos im gewählten Zeitraum — zeigt All Time Daten.")
             hook_stats = (tagged.groupby('Hook Type')
                                 .agg(Avg_Views=('Video Views', 'mean'),
                                      Avg_Share=('Share Rate',  'mean'),

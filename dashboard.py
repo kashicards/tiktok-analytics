@@ -264,8 +264,8 @@ def apply_period_filter(content_df, period, now):
             content_df['Posted Date'].notna() &
             (content_df['Posted Date'] > cutoff_24h)
         ])
-        filtered = base.sort_values('Posted Date', ascending=False).head(4)
-        hint = "<strong>Letzte 4 Videos (>24h)</strong>"
+        filtered = base.sort_values('Posted Date', ascending=False).head(3)
+        hint = "<strong>Letzte 3 Videos (>24h)</strong>"
         if n_excluded > 0:
             hint += f" · {n_excluded} Video(s) <24h ausgeschlossen"
         return filtered, period_start, hint
@@ -284,25 +284,25 @@ def apply_period_filter(content_df, period, now):
 
 
 def get_week_over_week(content_df, now):
-    """Last 4 videos vs. the 4 before that — independent of period filter."""
+    """Last 3 videos vs. the 3 before that — independent of period filter."""
     cutoff_24h = datetime.now() - timedelta(hours=24)
     valid = content_df[
         content_df['Posted Date'].notna() &
         (content_df['Posted Date'] <= cutoff_24h)
     ].sort_values('Posted Date', ascending=False)
-    if len(valid) < 5:
+    if len(valid) < 4:
         return None
-    this_4 = valid.head(4)
-    prev_4 = valid.iloc[4:8]
-    if len(prev_4) == 0:
+    this_3 = valid.head(3)
+    prev_3 = valid.iloc[3:6]
+    if len(prev_3) == 0:
         return None
     return {
-        'this': {'views': this_4['Video Views'].mean(),
-                 'share': this_4['Share Rate'].mean(),
-                 'eng':   this_4['Engagement Rate'].mean()},
-        'prev': {'views': prev_4['Video Views'].mean(),
-                 'share': prev_4['Share Rate'].mean(),
-                 'eng':   prev_4['Engagement Rate'].mean()},
+        'this': {'views': this_3['Video Views'].mean(),
+                 'share': this_3['Share Rate'].mean(),
+                 'eng':   this_3['Engagement Rate'].mean()},
+        'prev': {'views': prev_3['Video Views'].mean(),
+                 'share': prev_3['Share Rate'].mean(),
+                 'eng':   prev_3['Engagement Rate'].mean()},
     }
 
 
@@ -548,7 +548,7 @@ def main():
     # ── WEEK-OVER-WEEK ────────────────────────────────────────────────────────
     wow = get_week_over_week(content_df, now)
     if wow:
-        st.subheader("↕️ Letzte 4 Videos vs. 4 davor")
+        st.subheader("↕️ Letzte 3 Videos vs. 3 davor")
         c1, c2, c3 = st.columns(3)
 
         def _delta(curr, prev, fmt, suffix=''):
@@ -604,7 +604,7 @@ def main():
     st.subheader("📊 Overview")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        label = "Total Views (4 Videos)" if period == 'Last 7 Days' else "Total Views"
+        label = "Total Views (3 Videos)" if period == 'Last 7 Days' else "Total Views"
         st.metric(label, f"{int(filtered_df['Video Views'].sum()):,}")
     with col2:
         if followers_df is not None:
@@ -653,7 +653,7 @@ def main():
         ))
         fig.add_trace(go.Scatter(
             x=trend_df['Label'], y=trend_df['Rolling_Share'],
-            mode='lines', name='Ø 4 Videos',
+            mode='lines', name='Ø 3 Videos',
             line=dict(color='#FF9500', width=2.5),
             hovertemplate='Ø 4: %{y:.2f}%<extra></extra>'
         ))
@@ -674,7 +674,7 @@ def main():
         cutoff_24h_day = datetime.now() - timedelta(hours=24)
 
         # FIX: Use filtered_df for period-sensitive analysis.
-        # Last 7 Days only has 4 videos max → not enough per weekday → fall back to All Time.
+        # Last 7 Days only has 3 videos max → not enough per weekday → fall back to All Time.
         MIN_VIDEOS_FOR_DAY_CHART = 7
         if period == 'Last 7 Days' or len(filtered_df) < MIN_VIDEOS_FOR_DAY_CHART:
             day_source_df = content_df.copy()
@@ -757,7 +757,7 @@ def main():
 
     # ── TOP VIDEOS ────────────────────────────────────────────────────────────
     top_label = {
-        'Last 7 Days':   '🏆 Analysierte Videos (letzte 4, >24h)',
+        'Last 7 Days':   '🏆 Analysierte Videos (letzte 3, >24h)',
         'Last 30 Days':  '🏆 Top Videos — letzte 30 Tage',
         'Last 3 Months': '🏆 Top Videos — letztes Quartal',
         'All Time':      '🏆 Top Videos — All Time',

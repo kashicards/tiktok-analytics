@@ -101,26 +101,44 @@ def smart_parse_dates(series):
     month_map = {
         'Januar': 1, 'Februar': 2, 'März': 3, 'April': 4,
         'Mai': 5, 'Juni': 6, 'Juli': 7, 'August': 8,
-        'September': 9, 'Oktober': 10, 'November': 11, 'Dezember': 12
+        'September': 9, 'Oktober': 10, 'November': 11, 'Dezember': 12,
+        'January': 1, 'February': 2, 'March': 3,
+        'May': 5, 'June': 6, 'July': 7,
+        'October': 10, 'November': 11, 'December': 12,
+        'August': 8, 'September': 9,
     }
     now = datetime.now()
+
+    def extract_day_month(parts):
+        """Returns (day, month_int) for both 'April 23' and '23. April' formats."""
+        p0_clean = parts[0].replace('.', '')
+        p1_clean = parts[1].replace('.', '')
+        if p0_clean.isdigit():
+            return int(p0_clean), month_map.get(p1_clean)
+        else:
+            m = month_map.get(p0_clean)
+            if m and p1_clean.isdigit():
+                return int(p1_clean), m
+        return None, None
+
     months = []
     for val in series.dropna():
-        parts = str(val).strip().replace('.', '').split()
+        parts = str(val).strip().split()
         if len(parts) >= 2:
-            m = month_map.get(parts[1])
+            _, m = extract_day_month(parts)
             if m: months.append(m)
     spans_year_boundary = (1 in months and 12 in months)
 
     def parse_one(date_str):
         if pd.isna(date_str) or str(date_str).strip() in ('undefined', ''):
             return pd.NaT
-        parts = str(date_str).strip().replace('.', '').split()
+        parts = str(date_str).strip().split()
         if len(parts) < 2: return pd.NaT
         try:
-            day   = int(parts[0])
-            month = month_map.get(parts[1], 1)
-            year  = now.year
+            day, month = extract_day_month(parts)
+            if day is None or month is None:
+                return pd.NaT
+            year = now.year
             if spans_year_boundary and month >= 10:
                 year = now.year - 1
             parsed = datetime(year, month, day)
@@ -138,37 +156,45 @@ def categorize_topic(title):
     keyword_map = {
         'Packaging':   ['packaging', 'bleed', 'dieline', 'print file', 'shelf',
                         'regal', 'mockup', 'print design', 'label', 'barcode'],
-        'Color':       ['color', 'colour', 'hue', 'palette', 'hsl', 'contrast',
-                        'luminan', 'lightness', 'oklch', 'cielab', 'saturati',
-                        'colorblind', 'colour blind', 'color blind',
-                        'simultaneous', 'cmyk', 'rgb', 'icc', 'wcag'],
-        'Typography':  ['typography', 'font', 'typeface', 'line height', 'kerning',
-                        'tracking', 'baseline', 'serif', 'sans', 'bold', 'italic',
-                        'emphasis', 'legib', 'readab', 'type scale', 'text weight',
-                        'letter spacing', 'x-height'],
-        'Layout':      ['grid', 'layout', 'spacing', 'whitespace', 'white space',
-                        'optical', 'centering', 'center', 'alignment', 'align',
-                        'margin', 'padding', 'composition', 'visual weight',
-                        'hierarchy', 'focal', 'asymmetric', 'balance', 'proportion',
+        'Color':       ['color palette', 'colour palette', 'color theory', 'colour theory',
+                        'color contrast', 'colour contrast', 'color grading',
+                        'hue', 'hsl', 'luminan', 'lightness', 'oklch', 'cielab',
+                        'saturati', 'colorblind', 'colour blind', 'color blind',
+                        'simultaneous contrast', 'cmyk', 'rgb', 'icc profile', 'wcag',
+                        'color psychology', 'color mode', 'hex value', 'tint', 'shade',
+                        'warm color', 'cool color', 'complementary color'],
+        'Typography':  ['typography', 'typeface', 'line height', 'kerning',
+                        'baseline grid', 'serif', 'sans-serif', 'bold text',
+                        'italic text', 'text emphasis', 'legibility', 'readability',
+                        'type scale', 'text weight', 'letter spacing', 'x-height',
+                        'text hierarchy', 'font pairing', 'font size', 'font weight',
+                        'variable font', 'display font', 'body text', 'caption text'],
+        'Layout':      ['grid', 'layout', 'spacing scale', 'whitespace', 'white space',
+                        'optical alignment', 'centering', 'alignment', 'margin',
+                        'padding', 'composition', 'visual weight', 'visual hierarchy',
+                        'focal point', 'asymmetric', 'balance', 'proportion',
                         'golden ratio', 'rule of thirds', 'negative space',
-                        'signal', 'visual scanning', 'scanning'],
+                        'z-pattern', 'z-layout', 'f-pattern', 'f-layout',
+                        'scan path', 'visual flow', 'reading flow',
+                        'proximity', 'repetition', 'contrast layout'],
         'Psychology':  ['subitiz', 'von restorff', 'restorff', 'decoy', 'anchoring',
                         'priming', 'scarcity', 'social proof', 'reciprocity',
-                        'loss aversion', 'framing', 'nudge', 'mental model',
+                        'loss aversion', 'framing effect', 'nudge', 'mental model',
                         'heuristic', 'choice architecture', 'paradox of choice',
-                        'inattentional', 'blindness', 'pre-selection',
-                        'cognitive load', 'cognitive bias', 'cognitive',
+                        'inattentional', 'visual scanning', 'scanning pattern',
+                        'pre-selection', 'cognitive load', 'cognitive bias', 'cognitive',
                         'perception', 'gestalt', 'fitts', "fitts'",
                         'hick', 'jakob', 'miller', 'psychology', 'psycholog',
-                        'bias', ' law', 'attention span'],
-        'Components':  ['card', 'radius', 'icon', 'modal', 'tooltip', 'button',
-                        'input', 'form', 'navigation', 'tabs', 'menu', 'breadcrumb'],
-        'Performance': ['loading', 'skeleton', 'progress', 'performance'],
+                        'attention span', 'eye tracking', 'pattern recognition',
+                        'decision fatigue', 'confirmation bias', 'visual perception'],
+        'Components':  ['card component', 'border radius', 'icon set', 'modal',
+                        'tooltip', 'button design', 'input field', 'form design',
+                        'navigation bar', 'tab bar', 'menu design', 'breadcrumb'],
+        'Performance': ['loading time', 'skeleton screen', 'progress bar', 'performance'],
     }
-    for category, words in keyword_map.items():
-        if any(word in t for word in words):
-            return category
-    return 'Other'
+    scores = {cat: sum(1 for w in words if w in t) for cat, words in keyword_map.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else 'Other'
 
 
 def get_metric_color_status(value, metric_type):
@@ -427,7 +453,7 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         hook_tag  = f" [{hook}]" if hook and hook != "—" else ""
         wd        = WEEKDAY_DE.get(row['Posted Date'].weekday(), '') if pd.notna(row['Posted Date']) else ''
         views     = int(row['Video Views'])
-        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} —:— | | {views:,} | |")
+        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} —:— | ___ | ___ → ___ | {views:,} → ___ | ___ → ___ | ___ → ___ |")
 
     table = "\n".join(table_rows)
     top_title  = str(top['Video Title'])[:60]
@@ -451,8 +477,8 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         f">\n"
         f"> 📊 **Video-Details:**\n"
         f">\n"
-        f"> | Video | Thema | Uhrzeit | FYP | Views | Retention |\n"
-        f"> | --- | --- | --- | --- | --- | --- |\n"
+        f"> | Video | Thema | Uhrzeit | Länge | FYP | Views | Retention | Ø Watch |\n"
+        f"> | --- | --- | --- | --- | --- | --- | --- | --- |\n"
         f"{table}\n"
         f">\n"
         f"> ↳ _Noch steigende Videos nächste Woche nachtragen_\n"
@@ -460,6 +486,87 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         f"> 🧪 **Letzter Test:** \n"
         f"> 🔬 **Nächste Woche:** \n"
         f"> 🔗 **Muster:** _"
+    )
+
+
+def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types):
+    today = now.strftime("%d.%m.%Y")
+
+    # Follower total + 30d growth
+    fol_total_str = "—"
+    fol_growth_str = "—"
+    if followers_df is not None and len(followers_df) > 0:
+        fs = followers_df.sort_values('Date').dropna(subset=['Date'])
+        if len(fs) > 0:
+            fol_total_str = f"{int(fs.iloc[-1]['Followers']):,}"
+        growth, _, _, _ = get_follower_growth(followers_df, 'Last 30 Days', now)
+        fol_growth_str = f"+{growth}" if growth > 0 else str(growth)
+
+    # Total views + Ø daily views (30d)
+    total_views = int(filtered_df['Video Views'].sum())
+    avg_daily_str = "—"
+    if overview_df is not None and len(overview_df) > 0:
+        cutoff = now - timedelta(days=30)
+        ov = overview_df[(overview_df['Date'] >= cutoff) & (overview_df['Views'] > 0)]
+        if len(ov) > 0:
+            avg_daily_str = f"{int(ov['Views'].mean()):,}"
+
+    # Returning viewers
+    ret_str = "—"
+    if viewers_df is not None and len(viewers_df) > 0:
+        total = viewers_df['Total'].sum()
+        ret   = viewers_df['Returning'].sum()
+        if total > 0:
+            ret_str = f"{ret / total * 100:.1f}%"
+
+    # Engagement + Share
+    avg_eng   = filtered_df['Engagement Rate'].mean()
+    avg_share = filtered_df['Share Rate'].mean()
+
+    # Blueprint table — grouped by hook type, sorted by Ø Views desc
+    vids = filtered_df.copy()
+    if 'Video Link' in vids.columns:
+        vids['_hook'] = vids['Video Link'].map(hook_types).fillna('—')
+    else:
+        vids['_hook'] = '—'
+    bp = (vids.groupby('_hook')
+              .agg(count=('Video Views', 'count'), avg_views=('Video Views', 'mean'))
+              .reset_index()
+              .sort_values('avg_views', ascending=False))
+    circled = "①②③④⑤⑥⑦⑧⑨"
+    bp_rows = []
+    for i, (_, r) in enumerate(bp.iterrows()):
+        num  = circled[i] if i < len(circled) else f"{i+1}."
+        hook = r['_hook']
+        bp_rows.append(
+            f"> | {num} {hook} | {int(r['count'])} | {int(r['avg_views']):,} | ___ | ___ |"
+        )
+    blueprint_table = "\n".join(bp_rows) if bp_rows else "> | — | — | — | — | — |"
+
+    # Top category by avg views
+    cat_avg = vids.groupby('Category')['Video Views'].mean()
+    top_cat       = cat_avg.idxmax() if len(cat_avg) > 0 else "—"
+    top_cat_views = f"{int(cat_avg.max()):,}" if len(cat_avg) > 0 else "—"
+
+    return (
+        f"> [!tiktok-month]+ {today}\n"
+        f">\n"
+        f"> 👥 **Follower:** {fol_total_str} ({fol_growth_str})\n"
+        f"> 👁 **Views (30d):** {total_views:,}\n"
+        f"> 📅 **Ø Daily Views:** {avg_daily_str}\n"
+        f"> 🔄 **Returning Viewers:** {ret_str}\n"
+        f"> 💬 **Ø Engagement:** {avg_eng:.1f}%\n"
+        f"> 📤 **Ø Share Rate:** {avg_share:.2f}%\n"
+        f">\n"
+        f"> | Blueprint | Videos | Ø Views | Ø Watchtime | Ø FYP |\n"
+        f"> | --- | --- | --- | --- | --- |\n"
+        f"{blueprint_table}\n"
+        f">\n"
+        f"> 📊 **Top-Kategorie:** {top_cat} — Ø {top_cat_views} Views\n"
+        f">\n"
+        f"> ✅ **Bestätigt:** _\n"
+        f"> ❌ **Widerlegt / offen:** _\n"
+        f"> 🎯 **Hypothese nächster Monat:** _"
     )
 
 
@@ -882,13 +989,16 @@ def main():
     # ── CALLOUT GENERATOR ─────────────────────────────────────────────────────
     st.divider()
     st.subheader("📋 Obsidian Callout generieren")
-    if period != 'Last 7 Days':
-        st.info("💡 Wechsle zu **Last 7 Days** für den Wochenrückblick-Callout.")
-    else:
+    if period == 'Last 7 Days':
         callout = build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types)
-        st.caption("Uhrzeit (z.B. 'Mo 17:34'), FYP% und Retention manuell ergänzen. "
-                   "Top/Flop-Notiz und Muster-Zeile manuell befüllen.")
+        st.caption("Uhrzeit, FYP% und Retention manuell ergänzen. Top/Flop-Notiz und Muster-Zeile manuell befüllen.")
         st.code(callout, language=None)
+    elif period == 'Last 30 Days':
+        callout = build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types)
+        st.caption("Ø Watchtime und Ø FYP pro Blueprint manuell ergänzen. Bestätigt/Widerlegt/Hypothese selbst ausfüllen.")
+        st.code(callout, language=None)
+    else:
+        st.info("💡 Wechsle zu **Last 7 Days** oder **Last 30 Days** für den Callout.")
 
 
 # ── PROCESS UPLOADS ───────────────────────────────────────────────────────────

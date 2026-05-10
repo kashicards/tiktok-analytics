@@ -325,10 +325,12 @@ def get_week_over_week(content_df, now):
     return {
         'this': {'views': this_3['Video Views'].mean(),
                  'share': this_3['Share Rate'].mean(),
-                 'eng':   this_3['Engagement Rate'].mean()},
+                 'eng':   this_3['Engagement Rate'].mean(),
+                 'save':  this_3['Save Rate'].mean() if 'Save Rate' in this_3.columns else 0.0},
         'prev': {'views': prev_3['Video Views'].mean(),
                  'share': prev_3['Share Rate'].mean(),
-                 'eng':   prev_3['Engagement Rate'].mean()},
+                 'eng':   prev_3['Engagement Rate'].mean(),
+                 'save':  prev_3['Save Rate'].mean() if 'Save Rate' in prev_3.columns else 0.0},
     }
 
 
@@ -529,8 +531,11 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
         vids['_hook'] = vids['Video Link'].map(hook_types).fillna('—')
     else:
         vids['_hook'] = '—'
+    _bp_agg = {'count': ('Video Views', 'count'), 'avg_views': ('Video Views', 'mean')}
+    if 'Save Rate' in vids.columns:
+        _bp_agg['avg_save'] = ('Save Rate', 'mean')
     bp = (vids.groupby('_hook')
-              .agg(count=('Video Views', 'count'), avg_views=('Video Views', 'mean'))
+              .agg(**_bp_agg)
               .reset_index()
               .sort_values('avg_views', ascending=False))
     circled = "①②③④⑤⑥⑦⑧⑨"
@@ -538,10 +543,11 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
     for i, (_, r) in enumerate(bp.iterrows()):
         num  = circled[i] if i < len(circled) else f"{i+1}."
         hook = r['_hook']
+        save_cell = f"{r['avg_save']:.2f}%" if 'avg_save' in r.index else "—"
         bp_rows.append(
-            f"> | {num} {hook} | {int(r['count'])} | {int(r['avg_views']):,} | ___ | ___ |"
+            f"> | {num} {hook} | {int(r['count'])} | {int(r['avg_views']):,} | {save_cell} | ___ | ___ |"
         )
-    blueprint_table = "\n".join(bp_rows) if bp_rows else "> | — | — | — | — | — |"
+    blueprint_table = "\n".join(bp_rows) if bp_rows else "> | — | — | — | — | — | — |"
 
     # Top category by avg views
     cat_avg = vids.groupby('Category')['Video Views'].mean()
@@ -558,8 +564,8 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
         f"> 💬 **Ø Engagement:** {avg_eng:.1f}%\n"
         f"> 📤 **Ø Share Rate:** {avg_share:.2f}%\n"
         f">\n"
-        f"> | Blueprint | Videos | Ø Views | Ø Watchtime | Ø FYP |\n"
-        f"> | --- | --- | --- | --- | --- |\n"
+        f"> | Blueprint | Videos | Ø Views | Ø Save Rate | Ø Watchtime | Ø FYP |\n"
+        f"> | --- | --- | --- | --- | --- | --- |\n"
         f"{blueprint_table}\n"
         f">\n"
         f"> 📊 **Top-Kategorie:** {top_cat} — Ø {top_cat_views} Views\n"
@@ -609,6 +615,10 @@ def main():
 
     # ── DATEN LADEN ───────────────────────────────────────────────────────────
     content_df   = pd.read_csv(content_path)
+    if 'Saves' not in content_df.columns:
+        content_df['Saves'] = 0
+    if 'Save Rate' not in content_df.columns:
+        content_df['Save Rate'] = (content_df['Saves'] / content_df['Video Views'].replace(0, 1) * 100).clip(0, 100)
     overview_df  = pd.read_csv(overview_path)  if overview_path.exists()  else None
     viewers_df   = pd.read_csv(viewers_path)   if viewers_path.exists()   else None
     followers_df = pd.read_csv(followers_path) if followers_path.exists() else None
@@ -656,7 +666,7 @@ def main():
     wow = get_week_over_week(content_df, now)
     if wow:
         st.subheader("↕️ Letzte 3 Videos vs. 3 davor")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
 
         def _delta(curr, prev, fmt, suffix=''):
             d    = curr - prev
@@ -675,6 +685,9 @@ def main():
         c3.metric("⌀ Engagement",  f"{wow['this']['eng']:.1f}%",
                   _delta(wow['this']['eng'], wow['prev']['eng'], '.1f', '%'),
                   delta_color=_color(wow['this']['eng'], wow['prev']['eng']))
+        c4.metric("⌀ Save Rate",   f"{wow['this']['save']:.2f}%",
+                  _delta(wow['this']['save'], wow['prev']['save'], '.2f', '%'),
+                  delta_color=_color(wow['this']['save'], wow['prev']['save']))
     st.divider()
 
     # ── INSIGHTS ──────────────────────────────────────────────────────────────
@@ -685,7 +698,7 @@ def main():
 
     # ── METRICS ───────────────────────────────────────────────────────────────
     st.subheader("🎯 Performance")
-    col_m1, col_m2 = st.columns(2)
+    col_m1, col_m2, col_m3 = st.columns(3)
 
     with col_m1:
         avg_share     = filtered_df['Share Rate'].mean()
@@ -704,6 +717,11 @@ def main():
         for a in get_actions('engagement_rate', status)[:2]:
             ac = 'action-critical' if '🔴' in a else 'action-warning' if '🟡' in a else 'action-good'
             st.markdown(f'<div class="{ac}">{a}</div>', unsafe_allow_html=True)
+
+    with col_m3:
+        avg_save = filtered_df['Save Rate'].mean() if 'Save Rate' in filtered_df.columns else 0.0
+        st.markdown(f'<div class="metric-warning">{avg_save:.2f}%</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-label">Ø Save Rate</div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -871,13 +889,20 @@ def main():
     }.get(period, '🏆 Top Videos')
     st.subheader(top_label)
 
+    _top_cols = ['Video Title', 'Posted Date', 'Video Views', 'Share Rate', 'Engagement Rate',
+                 'Saves', 'Save Rate', 'Category']
+    _top_cols = [c for c in _top_cols if c in filtered_df.columns]
     top_n = filtered_df.sort_values('Video Views', ascending=False).head(
         4 if period == 'Last 7 Days' else 5
-    )[['Video Title', 'Posted Date', 'Video Views', 'Share Rate', 'Engagement Rate', 'Category']].copy()
+    )[_top_cols].copy()
     top_n['Posted Date']     = top_n['Posted Date'].apply(lambda d: fmt_date(d, 'weekday'))
     top_n['Video Views']     = top_n['Video Views'].apply(lambda x: f"{int(x):,}")
     top_n['Share Rate']      = top_n['Share Rate'].apply(lambda x: f"{x:.2f}%")
     top_n['Engagement Rate'] = top_n['Engagement Rate'].apply(lambda x: f"{x:.1f}%")
+    if 'Saves' in top_n.columns:
+        top_n['Saves']       = top_n['Saves'].apply(lambda x: int(x))
+    if 'Save Rate' in top_n.columns:
+        top_n['Save Rate']   = top_n['Save Rate'].apply(lambda x: f"{x:.2f}%")
     top_n['Video Title']     = top_n['Video Title'].str[:60] + '…'
     st.dataframe(top_n, use_container_width=True, hide_index=True)
 
@@ -948,13 +973,17 @@ def main():
             st.subheader("🏷️ Hook-Typ Performance")
             if hook_fallback:
                 st.caption("📌 Zu wenig getaggte Videos im gewählten Zeitraum — zeigt All Time Daten.")
+            _save_col = 'Save Rate' if 'Save Rate' in tagged.columns else None
+            _agg = {'Avg_Views': ('Video Views', 'mean'),
+                    'Avg_Share': ('Share Rate',  'mean'),
+                    'Count':     ('Video Title', 'count')}
+            if _save_col:
+                _agg['Avg_Save'] = (_save_col, 'mean')
             hook_stats = (tagged.groupby('Hook Type')
-                                .agg(Avg_Views=('Video Views', 'mean'),
-                                     Avg_Share=('Share Rate',  'mean'),
-                                     Count=('Video Title',    'count'))
+                                .agg(**_agg)
                                 .round(2).reset_index()
                                 .sort_values('Avg_Views', ascending=False))
-            ch1, ch2 = st.columns(2)
+            ch1, ch2, ch3 = st.columns(3)
             with ch1:
                 fig = px.bar(hook_stats, x='Hook Type', y='Avg_Views',
                              text='Avg_Views', color='Avg_Views',
@@ -969,6 +998,16 @@ def main():
                 fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
                 fig.update_layout(height=270, showlegend=False, margin=dict(l=0,r=0,t=30,b=0))
                 st.plotly_chart(fig, use_container_width=True)
+            with ch3:
+                if 'Avg_Save' in hook_stats.columns:
+                    fig = px.bar(hook_stats, x='Hook Type', y='Avg_Save',
+                                 text='Avg_Save', color='Avg_Save',
+                                 color_continuous_scale=['#1C1C1E', '#34C759'], title='Avg Save Rate %')
+                    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                    fig.update_layout(height=270, showlegend=False, margin=dict(l=0,r=0,t=30,b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Keine Save-Daten verfügbar.")
 
     # ── CATEGORY PERFORMANCE ──────────────────────────────────────────────────
     st.subheader("📁 Category Performance")
@@ -1021,16 +1060,22 @@ def _process_uploads(uploaded_files):
             'Video title':  'Video Title', 'Video link': 'Video Link',
             'Total views':  'Video Views', 'Total likes': 'Likes',
             'Total comments': 'Comments', 'Total shares': 'Shares',
+            'Total saves':  'Saves',
             'Post time':    'Posted Date',
         })
         for col in ['Video Views', 'Likes', 'Comments', 'Shares']:
             df[col] = clean_numeric(df[col])
+        if 'Saves' in df.columns:
+            df['Saves'] = clean_numeric(df['Saves']).astype(int)
+        else:
+            df['Saves'] = 0
         df = df.sort_values('Video Views', ascending=False)
         df = df.drop_duplicates(subset=['Video Link'], keep='first')
         df['Posted Date']     = smart_parse_dates(df['Posted Date'])
         df['Share Rate']      = (df['Shares'] / df['Video Views'].replace(0, 1) * 100).clip(0, 100)
         df['Engagement Rate'] = ((df['Likes'] + df['Comments'] + df['Shares']) /
                                   df['Video Views'].replace(0, 1) * 100).clip(0, 100)
+        df['Save Rate']       = (df['Saves'] / df['Video Views'].replace(0, 1) * 100).clip(0, 100)
         df['Category']        = df['Video Title'].apply(categorize_topic)
         df.to_csv(DATA_DIR / 'content.csv', index=False)
         st.sidebar.success(f"✅ {len(df)} unique videos")

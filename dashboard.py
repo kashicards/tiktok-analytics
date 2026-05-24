@@ -32,8 +32,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 HOOK_TYPES_FILE    = DATA_DIR / "hook_types.json"
 CAT_OVERRIDES_FILE = DATA_DIR / "category_overrides.json"
 
-HOOK_TYPE_OPTIONS    = ["—", "Kontrovers", "Zahl", "Mechanismus", "Vergleich", "Regel", "Beweis"]
-CATEGORIES_AVAILABLE = ["Color", "Typography", "Layout", "Psychology", "Packaging", "Components", "Performance", "Other"]
+HOOK_TYPE_OPTIONS    = ["—", "Kontrovers", "Mechanismus", "Regel + Zahl", "Beweis", "Vergleich"]
+CATEGORIES_AVAILABLE = ["Color", "Typography", "Layout", "Psychology", "Brand", "Packaging", "Components", "Performance", "Other"]
 WEEKDAY_DE           = {0: "Mo", 1: "Di", 2: "Mi", 3: "Do", 4: "Fr", 5: "Sa", 6: "So"}
 
 UPLOAD_GUIDE_MD = """
@@ -162,13 +162,18 @@ def categorize_topic(title):
                         'saturati', 'colorblind', 'colour blind', 'color blind',
                         'simultaneous contrast', 'cmyk', 'rgb', 'icc profile', 'wcag',
                         'color psychology', 'color mode', 'hex value', 'tint', 'shade',
-                        'warm color', 'cool color', 'complementary color'],
+                        'warm color', 'cool color', 'complementary color',
+                        'dark mode', 'chroma', 'hue shift', 'color vibration',
+                        'metamerism', 'bezold', 'color constancy', 'simultaneous',
+                        'vibration', 'adjacent color', 'optical mix'],
         'Typography':  ['typography', 'typeface', 'line height', 'kerning',
                         'baseline grid', 'serif', 'sans-serif', 'bold text',
                         'italic text', 'text emphasis', 'legibility', 'readability',
                         'type scale', 'text weight', 'letter spacing', 'x-height',
                         'text hierarchy', 'font pairing', 'font size', 'font weight',
-                        'variable font', 'display font', 'body text', 'caption text'],
+                        'variable font', 'display font', 'body text', 'caption text',
+                        'small caps', 'smcp', 'fake small caps', 'optical size',
+                        'tabular', 'lining figures', 'leading', 'measure', 'tracking'],
         'Layout':      ['grid', 'layout', 'spacing scale', 'whitespace', 'white space',
                         'optical alignment', 'centering', 'alignment', 'margin',
                         'padding', 'composition', 'visual weight', 'visual hierarchy',
@@ -176,7 +181,11 @@ def categorize_topic(title):
                         'golden ratio', 'rule of thirds', 'negative space',
                         'z-pattern', 'z-layout', 'f-pattern', 'f-layout',
                         'scan path', 'visual flow', 'reading flow',
-                        'proximity', 'repetition', 'contrast layout'],
+                        'proximity', 'repetition', 'contrast layout',
+                        'anchor', 'axial', 'edge tension', 'broken grid',
+                        'border radius', 'corner radius', 'entry point',
+                        'manuscript grid', 'modular grid', 'van de graaf',
+                        'column grid', 'hierarchical grid'],
         'Psychology':  ['subitiz', 'von restorff', 'restorff', 'decoy', 'anchoring',
                         'priming', 'scarcity', 'social proof', 'reciprocity',
                         'loss aversion', 'framing effect', 'nudge', 'mental model',
@@ -186,8 +195,15 @@ def categorize_topic(title):
                         'perception', 'gestalt', 'fitts', "fitts'",
                         'hick', 'jakob', 'miller', 'psychology', 'psycholog',
                         'attention span', 'eye tracking', 'pattern recognition',
-                        'decision fatigue', 'confirmation bias', 'visual perception'],
-        'Components':  ['card component', 'border radius', 'icon set', 'modal',
+                        'decision fatigue', 'confirmation bias', 'visual perception',
+                        'bouba', 'kiki', 'sound symbolism', 'easing', 'linear motion',
+                        'contour bias', 'figure ground', 'stroop', 'closure',
+                        'change blindness', 'serial position'],
+        'Brand':       ['logo', 'clearspace', 'clear space', 'brand', 'branding',
+                        'identity', 'icon system', 'shape language', 'squircle',
+                        'icon centering', 'logo format', 'logo clearspace',
+                        'wordmark', 'logomark', 'brand system'],
+        'Components':  ['card component', 'icon set', 'modal',
                         'tooltip', 'button design', 'input field', 'form design',
                         'navigation bar', 'tab bar', 'menu design', 'breadcrumb'],
         'Performance': ['loading time', 'skeleton screen', 'progress bar', 'performance'],
@@ -207,6 +223,11 @@ def get_metric_color_status(value, metric_type):
         if value >= 6.0:   return 'metric-excellent', 'EXCELLENT'
         elif value >= 4.0: return 'metric-good',      'GOOD'
         elif value >= 2.0: return 'metric-warning',   'LOW'
+        else:              return 'metric-critical',   'CRITICAL'
+    elif metric_type == 'save_rate':
+        if value >= 3.0:   return 'metric-excellent', 'EXCEPTIONAL'
+        elif value >= 1.5: return 'metric-good',      'GOOD'
+        elif value >= 0.8: return 'metric-warning',   'LOW'
         else:              return 'metric-critical',   'CRITICAL'
     return 'metric-warning', 'UNKNOWN'
 
@@ -326,11 +347,11 @@ def get_week_over_week(content_df, now):
         'this': {'views': this_3['Video Views'].mean(),
                  'share': this_3['Share Rate'].mean(),
                  'eng':   this_3['Engagement Rate'].mean(),
-                 'save':  this_3['Save Rate'].mean() if 'Save Rate' in this_3.columns else 0.0},
+                 'save':  this_3['Save Rate'].mean() if 'Save Rate' in this_3.columns and this_3['Saves'].sum() > 0 else None},
         'prev': {'views': prev_3['Video Views'].mean(),
                  'share': prev_3['Share Rate'].mean(),
                  'eng':   prev_3['Engagement Rate'].mean(),
-                 'save':  prev_3['Save Rate'].mean() if 'Save Rate' in prev_3.columns else 0.0},
+                 'save':  prev_3['Save Rate'].mean() if 'Save Rate' in prev_3.columns and prev_3['Saves'].sum() > 0 else None},
     }
 
 
@@ -416,10 +437,15 @@ def apply_cat_overrides(df, overrides):
 
 def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types):
     today     = now.strftime("%d.%m.%Y")
-    avg_share = filtered_df['Share Rate'].mean()
-    avg_eng   = filtered_df['Engagement Rate'].mean()
+    avg_share     = filtered_df['Share Rate'].mean()
+    avg_eng       = filtered_df['Engagement Rate'].mean()
+    has_saves     = 'Saves' in filtered_df.columns and filtered_df['Saves'].sum() > 0
+    avg_save_rate = filtered_df['Save Rate'].mean() if has_saves else None
+    total_views   = int(filtered_df['Video Views'].sum())
     share_status = "✅" if avg_share >= 0.3 else "⚠️"
     eng_status   = "✅" if avg_eng   >= 4.0 else "⚠️"
+    save_status  = ("✅" if avg_save_rate >= 1.5 else "⚠️") if avg_save_rate is not None else ""
+    tt_save_str  = f"Ø {avg_save_rate:.2f}%" if avg_save_rate is not None else "___"
 
     ret_str, ret_status = "—", ""
     if viewers_df is not None and len(viewers_df) > 0:
@@ -455,7 +481,9 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         hook_tag  = f" [{hook}]" if hook and hook != "—" else ""
         wd        = WEEKDAY_DE.get(row['Posted Date'].weekday(), '') if pd.notna(row['Posted Date']) else ''
         views     = int(row['Video Views'])
-        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} —:— | ___ | ___ → ___ | {views:,} → ___ | ___ → ___ | ___ → ___ |")
+        saves     = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
+        save_rate = f"{saves / views * 100:.2f}%" if has_saves and views > 0 else "___"
+        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} —:— | ___ → ___ | ___ | ___ → ___ | {views:,} → ___ | {saves:,} → ___ | {save_rate} | ___ → ___ | ___ → ___ | ___ → ___ | ___ → ___ | ___ | ___ → ___ | ___ |")
 
     table = "\n".join(table_rows)
     top_title  = str(top['Video Title'])[:60]
@@ -464,13 +492,15 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
     return (
         f"> [!tiktok]+ {today}\n"
         f">\n"
-        f"> | Metrik | Wert | Status |\n"
-        f"> | --- | --- | --- |\n"
-        f"> | Share Rate | {avg_share:.2f}% | {share_status} |\n"
-        f"> | Engagement | {avg_eng:.1f}% | {eng_status} |\n"
-        f"> | Returning Viewers | {ret_str} | {ret_status} |\n"
-        f"> | Neue Follower | {fol_str} | |\n"
-        f"> | Optimale Postzeit | {post_time_str} | |\n"
+        f"> | Metrik | TikTok | IG | Status |\n"
+        f"> | --- | --- | --- | --- |\n"
+        f"> | Views | {total_views:,} | ___ | |\n"
+        f"> | New Followers | {fol_str} | ___ | |\n"
+        f"> | Save Rate | {tt_save_str} | ___ | {save_status} |\n"
+        f"> | Share Rate | {avg_share:.2f}% | — | {share_status} |\n"
+        f"> | Engagement | {avg_eng:.1f}% | — | {eng_status} |\n"
+        f"> | Returning Viewers | {ret_str} | — | {ret_status} |\n"
+        f"> | Optimale Postzeit | {post_time_str} | — | |\n"
         f">\n"
         f"> 🏆 **Top:** \"{top_title}…\"\n"
         f"> ↳ _\n"
@@ -479,8 +509,8 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         f">\n"
         f"> 📊 **Video-Details:**\n"
         f">\n"
-        f"> | Video | Thema | Uhrzeit | Länge | FYP | Views | Retention | Ø Watch |\n"
-        f"> | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        f"> | Video | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Save Rate | IG New Followers | IG Ø Watch |\n"
+        f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
         f"{table}\n"
         f">\n"
         f"> ↳ _Noch steigende Videos nächste Woche nachtragen_\n"
@@ -531,8 +561,9 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
         vids['_hook'] = vids['Video Link'].map(hook_types).fillna('—')
     else:
         vids['_hook'] = '—'
+    has_saves_month = 'Saves' in vids.columns and vids['Saves'].sum() > 0
     _bp_agg = {'count': ('Video Views', 'count'), 'avg_views': ('Video Views', 'mean')}
-    if 'Save Rate' in vids.columns:
+    if has_saves_month:
         _bp_agg['avg_save'] = ('Save Rate', 'mean')
     bp = (vids.groupby('_hook')
               .agg(**_bp_agg)
@@ -543,7 +574,7 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
     for i, (_, r) in enumerate(bp.iterrows()):
         num  = circled[i] if i < len(circled) else f"{i+1}."
         hook = r['_hook']
-        save_cell = f"{r['avg_save']:.2f}%" if 'avg_save' in r.index else "—"
+        save_cell = f"{r['avg_save']:.2f}%" if has_saves_month and 'avg_save' in r.index else "___"
         bp_rows.append(
             f"> | {num} {hook} | {int(r['count'])} | {int(r['avg_views']):,} | {save_cell} | ___ | ___ |"
         )
@@ -563,6 +594,10 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
         f"> 🔄 **Returning Viewers:** {ret_str}\n"
         f"> 💬 **Ø Engagement:** {avg_eng:.1f}%\n"
         f"> 📤 **Ø Share Rate:** {avg_share:.2f}%\n"
+        f"> 🔖 **Ø Save Rate:** ___\n"
+        f"> 📸 **IG Views:** ___\n"
+        f"> 💾 **IG Saves:** ___\n"
+        f"> ⏱ **IG Ø Watch:** ___\n"
         f">\n"
         f"> | Blueprint | Videos | Ø Views | Ø Save Rate | Ø Watchtime | Ø FYP |\n"
         f"> | --- | --- | --- | --- | --- | --- |\n"
@@ -685,9 +720,12 @@ def main():
         c3.metric("⌀ Engagement",  f"{wow['this']['eng']:.1f}%",
                   _delta(wow['this']['eng'], wow['prev']['eng'], '.1f', '%'),
                   delta_color=_color(wow['this']['eng'], wow['prev']['eng']))
-        c4.metric("⌀ Save Rate",   f"{wow['this']['save']:.2f}%",
-                  _delta(wow['this']['save'], wow['prev']['save'], '.2f', '%'),
-                  delta_color=_color(wow['this']['save'], wow['prev']['save']))
+        if wow['this']['save'] is not None and wow['prev']['save'] is not None:
+            c4.metric("⌀ Save Rate", f"{wow['this']['save']:.2f}%",
+                      _delta(wow['this']['save'], wow['prev']['save'], '.2f', '%'),
+                      delta_color=_color(wow['this']['save'], wow['prev']['save']))
+        else:
+            c4.metric("⌀ Save Rate", "—")
     st.divider()
 
     # ── INSIGHTS ──────────────────────────────────────────────────────────────
@@ -719,9 +757,14 @@ def main():
             st.markdown(f'<div class="{ac}">{a}</div>', unsafe_allow_html=True)
 
     with col_m3:
-        avg_save = filtered_df['Save Rate'].mean() if 'Save Rate' in filtered_df.columns else 0.0
-        st.markdown(f'<div class="metric-warning">{avg_save:.2f}%</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="metric-label">Ø Save Rate</div>', unsafe_allow_html=True)
+        if 'Saves' in filtered_df.columns and filtered_df['Saves'].sum() > 0:
+            avg_save   = filtered_df['Save Rate'].mean()
+            cc, status = get_metric_color_status(avg_save, 'save_rate')
+            st.markdown(f'<div class="{cc}">{avg_save:.2f}%</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-label">Save Rate · {status} · Ziel: 1.5–3%</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="metric-warning">—</div>', unsafe_allow_html=True)
+            st.markdown('<div class="metric-label">Save Rate · nicht im TikTok-Export</div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -899,10 +942,11 @@ def main():
     top_n['Video Views']     = top_n['Video Views'].apply(lambda x: f"{int(x):,}")
     top_n['Share Rate']      = top_n['Share Rate'].apply(lambda x: f"{x:.2f}%")
     top_n['Engagement Rate'] = top_n['Engagement Rate'].apply(lambda x: f"{x:.1f}%")
+    has_saves_top = 'Saves' in filtered_df.columns and filtered_df['Saves'].sum() > 0
     if 'Saves' in top_n.columns:
-        top_n['Saves']       = top_n['Saves'].apply(lambda x: int(x))
+        top_n['Saves']     = top_n['Saves'].apply(lambda x: int(x) if has_saves_top else "—")
     if 'Save Rate' in top_n.columns:
-        top_n['Save Rate']   = top_n['Save Rate'].apply(lambda x: f"{x:.2f}%")
+        top_n['Save Rate'] = top_n['Save Rate'].apply(lambda x: f"{x:.2f}%" if has_saves_top else "—")
     top_n['Video Title']     = top_n['Video Title'].str[:60] + '…'
     st.dataframe(top_n, use_container_width=True, hide_index=True)
 
@@ -973,12 +1017,12 @@ def main():
             st.subheader("🏷️ Hook-Typ Performance")
             if hook_fallback:
                 st.caption("📌 Zu wenig getaggte Videos im gewählten Zeitraum — zeigt All Time Daten.")
-            _save_col = 'Save Rate' if 'Save Rate' in tagged.columns else None
+            has_saves_tagged = 'Saves' in tagged.columns and tagged['Saves'].sum() > 0
             _agg = {'Avg_Views': ('Video Views', 'mean'),
                     'Avg_Share': ('Share Rate',  'mean'),
                     'Count':     ('Video Title', 'count')}
-            if _save_col:
-                _agg['Avg_Save'] = (_save_col, 'mean')
+            if has_saves_tagged:
+                _agg['Avg_Save'] = ('Save Rate', 'mean')
             hook_stats = (tagged.groupby('Hook Type')
                                 .agg(**_agg)
                                 .round(2).reset_index()

@@ -1,15 +1,18 @@
-   # Python
-   __pycache__/
-   *.pyc
-   *.pyo
-   
-   # Data 
-   data/
-   *.csv
-   
-   # System
-   .DS_Store
-   Thumbs.db
-   
-   # VS Code
-   .vscode/data/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Data
+data/
+*.csv
+
+# System
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/data/
+
+# Claude
+.claude/settings.local.json

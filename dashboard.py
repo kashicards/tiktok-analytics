@@ -452,13 +452,45 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
     today     = now.strftime("%d.%m.%Y")
     avg_share     = filtered_df['Share Rate'].mean()
     avg_eng       = filtered_df['Engagement Rate'].mean()
-    has_saves     = 'Saves' in filtered_df.columns and filtered_df['Saves'].sum() > 0
-    avg_save_rate = filtered_df['Save Rate'].mean() if has_saves else None
     total_views   = int(filtered_df['Video Views'].sum())
+    # Aggregate saves: prefer manual entries, fall back to TikTok export
+    total_saves_agg = 0
+    for _, row in filtered_df.iterrows():
+        link = row.get('Video Link', '')
+        tt_saves_export = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
+        mv_saves = (video_manual or {}).get(link, {}).get('tt_saves', '')
+        try:
+            manual_saves = int(float(str(mv_saves or '0').replace(',', '')))
+        except (ValueError, AttributeError):
+            manual_saves = 0
+        total_saves_agg += max(tt_saves_export, manual_saves)
+    avg_save_rate = (total_saves_agg / total_views * 100) if total_saves_agg > 0 and total_views > 0 else None
     share_status = "✅" if avg_share >= 0.3 else "⚠️"
     eng_status   = "✅" if avg_eng   >= 4.0 else "⚠️"
     save_status  = ("✅" if avg_save_rate >= 1.5 else "⚠️") if avg_save_rate is not None else ""
     tt_save_str  = f"Ø {avg_save_rate:.2f}%" if avg_save_rate is not None else "___"
+
+    # IG summary: aggregate from per-video manual entries
+    ig_views_sum  = 0.0
+    ig_saves_sum  = 0.0
+    ig_shares_sum = 0.0
+    ig_fol_sum    = 0.0
+    for _, row in filtered_df.iterrows():
+        mv_row = (video_manual or {}).get(row.get('Video Link', ''), {})
+        def _parse(val):
+            try:
+                return float(str(val or '0').replace(',', '').replace('k','000').replace('K','000'))
+            except (ValueError, AttributeError):
+                return 0.0
+        ig_views_sum  += _parse(mv_row.get('ig_views'))
+        ig_saves_sum  += _parse(mv_row.get('ig_saves'))
+        ig_shares_sum += _parse(mv_row.get('ig_shares'))
+        ig_fol_sum    += _parse(mv_row.get('ig_followers'))
+    ig_views_str       = f"{int(ig_views_sum):,}" if ig_views_sum > 0 else "___"
+    ig_save_rate_str   = f"Ø {ig_saves_sum  / ig_views_sum * 100:.2f}%" if ig_views_sum > 0 else "___"
+    ig_share_rate_str  = f"Ø {ig_shares_sum / ig_views_sum * 100:.2f}%" if ig_views_sum > 0 else "—"
+    ig_share_status    = ("✅" if ig_shares_sum / ig_views_sum * 100 >= 0.3 else "⚠️") if ig_views_sum > 0 else ""
+    ig_fol_weekly_str  = f"+{int(ig_fol_sum)}" if ig_fol_sum > 0 else "___"
 
     ret_str, ret_status = "—", ""
     if viewers_df is not None and len(viewers_df) > 0:
@@ -495,8 +527,12 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         wd        = WEEKDAY_DE.get(row['Posted Date'].weekday(), '') if pd.notna(row['Posted Date']) else ''
         views     = int(row['Video Views'])
         saves     = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
-        save_rate = f"{saves / views * 100:.2f}%" if has_saves and views > 0 else "___"
         mv        = (video_manual or {}).get(link, {})
+        try:
+            saves = max(saves, int(float(str(mv.get('tt_saves', '') or '0').replace(',', ''))))
+        except (ValueError, AttributeError):
+            pass
+        save_rate = f"{saves / views * 100:.2f}%" if saves > 0 and views > 0 else "___"
         uhrzeit   = mv.get('uhrzeit',     '—:—')
         laenge    = mv.get('laenge',      '___')
         fyp       = mv.get('fyp',         '___')
@@ -505,10 +541,18 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         tt_fol    = mv.get('tt_followers','___')
         ig_views  = mv.get('ig_views',    '___')
         ig_saves  = mv.get('ig_saves',    '___')
-        ig_sr     = mv.get('ig_save_rate','___')
+        ig_shares = mv.get('ig_shares',   '___')
         ig_fol    = mv.get('ig_followers','___')
         ig_watch  = mv.get('ig_watch',    '___')
-        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} {uhrzeit} | {laenge} → ___ | {fyp} | ___ → ___ | {views:,} → ___ | {saves:,} → ___ | {save_rate} | {retention} → ___ | {watch} → ___ | {tt_fol} → ___ | {ig_views} → ___ | {ig_saves} → ___ | {ig_sr} | {ig_fol} → ___ | {ig_watch} |")
+        def _ig_num(val):
+            try:
+                return float(str(val or '0').replace(',', '').replace('k','000').replace('K','000'))
+            except (ValueError, AttributeError):
+                return 0.0
+        ig_views_num  = _ig_num(ig_views)
+        ig_sr         = f"{_ig_num(ig_saves)  / ig_views_num * 100:.2f}%" if ig_views_num > 0 else '___'
+        ig_share_rate = f"{_ig_num(ig_shares) / ig_views_num * 100:.2f}%" if ig_views_num > 0 else '___'
+        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} {uhrzeit} | {laenge} | {fyp} | {views:,} → ___ | {saves:,} → ___ | {save_rate} | {retention} → ___ | {watch} → ___ | {tt_fol} → ___ | {ig_views} → ___ | {ig_saves} → ___ | {ig_shares} → ___ | {ig_sr} | {ig_share_rate} | {ig_fol} → ___ | {ig_watch} |")
 
     table = "\n".join(table_rows)
     top_title  = str(top['Video Title'])[:60]
@@ -519,10 +563,10 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         f">\n"
         f"> | Metrik | TikTok | IG | Status |\n"
         f"> | --- | --- | --- | --- |\n"
-        f"> | Views | {total_views:,} | ___ | |\n"
-        f"> | New Followers | {fol_str} | ___ | |\n"
-        f"> | Save Rate | {tt_save_str} | ___ | {save_status} |\n"
-        f"> | Share Rate | {avg_share:.2f}% | — | {share_status} |\n"
+        f"> | Views | {total_views:,} | {ig_views_str} | |\n"
+        f"> | New Followers | {fol_str} | {ig_fol_weekly_str} | |\n"
+        f"> | Save Rate | {tt_save_str} | {ig_save_rate_str} | {save_status} |\n"
+        f"> | Share Rate | {avg_share:.2f}% | {ig_share_rate_str} | {share_status} |\n"
         f"> | Engagement | {avg_eng:.1f}% | — | {eng_status} |\n"
         f"> | Returning Viewers | {ret_str} | — | {ret_status} |\n"
         f"> | Optimale Postzeit | {post_time_str} | — | |\n"
@@ -534,8 +578,8 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         f">\n"
         f"> 📊 **Video-Details:**\n"
         f">\n"
-        f"> | Video | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Save Rate | IG New Followers | IG Ø Watch |\n"
-        f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        f"> | Video | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Shares | IG Save Rate | IG Share Rate | IG New Followers | IG Ø Watch |\n"
+        f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
         f"{table}\n"
         f">\n"
         f"> ↳ _Noch steigende Videos nächste Woche nachtragen_\n"
@@ -1103,6 +1147,7 @@ def main():
             ('uhrzeit',      'Uhrzeit',      '17:30'),
             ('laenge',       'Länge',         '60s'),
             ('fyp',          'FYP%',          '45%'),
+            ('tt_saves',     'TT Saves',      '450'),
             ('retention',    'Retention',     '35%'),
             ('watch',        'Ø Watch',       '28s'),
             ('tt_followers', 'TT Follower',   '+5'),
@@ -1110,7 +1155,7 @@ def main():
         _FIELDS_IG = [
             ('ig_views',     'IG Views',      '1.2k'),
             ('ig_saves',     'IG Saves',      '23'),
-            ('ig_save_rate', 'IG Save Rate',  '1.8%'),
+            ('ig_shares',    'IG Shares',     '15'),
             ('ig_followers', 'IG Follower',   '+3'),
             ('ig_watch',     'IG Ø Watch',    '22s'),
         ]

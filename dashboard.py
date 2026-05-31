@@ -31,6 +31,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 HOOK_TYPES_FILE    = DATA_DIR / "hook_types.json"
 CAT_OVERRIDES_FILE = DATA_DIR / "category_overrides.json"
+VIDEO_MANUAL_FILE  = DATA_DIR / "video_manual.json"
 
 HOOK_TYPE_OPTIONS    = ["—", "Kontrovers", "Mechanismus", "Regel + Zahl", "Beweis", "Vergleich"]
 CATEGORIES_AVAILABLE = ["Color", "Typography", "Layout", "Psychology", "Brand", "Packaging", "Components", "Performance", "Other"]
@@ -422,6 +423,18 @@ def save_cat_overrides(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def load_video_manual():
+    if VIDEO_MANUAL_FILE.exists():
+        with open(VIDEO_MANUAL_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_video_manual(data):
+    with open(VIDEO_MANUAL_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 def apply_cat_overrides(df, overrides):
     if not overrides or 'Video Link' not in df.columns:
         return df
@@ -435,7 +448,7 @@ def apply_cat_overrides(df, overrides):
 
 # ── CALLOUT GENERATOR ────────────────────────────────────────────────────────
 
-def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types):
+def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual=None):
     today     = now.strftime("%d.%m.%Y")
     avg_share     = filtered_df['Share Rate'].mean()
     avg_eng       = filtered_df['Engagement Rate'].mean()
@@ -483,7 +496,19 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         views     = int(row['Video Views'])
         saves     = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
         save_rate = f"{saves / views * 100:.2f}%" if has_saves and views > 0 else "___"
-        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} —:— | ___ → ___ | ___ | ___ → ___ | {views:,} → ___ | {saves:,} → ___ | {save_rate} | ___ → ___ | ___ → ___ | ___ → ___ | ___ → ___ | ___ | ___ → ___ | ___ |")
+        mv        = (video_manual or {}).get(link, {})
+        uhrzeit   = mv.get('uhrzeit',     '—:—')
+        laenge    = mv.get('laenge',      '___')
+        fyp       = mv.get('fyp',         '___')
+        retention = mv.get('retention',   '___')
+        watch     = mv.get('watch',       '___')
+        tt_fol    = mv.get('tt_followers','___')
+        ig_views  = mv.get('ig_views',    '___')
+        ig_saves  = mv.get('ig_saves',    '___')
+        ig_sr     = mv.get('ig_save_rate','___')
+        ig_fol    = mv.get('ig_followers','___')
+        ig_watch  = mv.get('ig_watch',    '___')
+        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} {uhrzeit} | {laenge} → ___ | {fyp} | ___ → ___ | {views:,} → ___ | {saves:,} → ___ | {save_rate} | {retention} → ___ | {watch} → ___ | {tt_fol} → ___ | {ig_views} → ___ | {ig_saves} → ___ | {ig_sr} | {ig_fol} → ___ | {ig_watch} |")
 
     table = "\n".join(table_rows)
     top_title  = str(top['Video Title'])[:60]
@@ -672,9 +697,10 @@ def main():
         viewers_df['Date']   = pd.to_datetime(viewers_df['Date'],   errors='coerce')
 
     # Apply persistent overrides
-    overrides  = load_cat_overrides()
-    content_df = apply_cat_overrides(content_df, overrides)
-    hook_types = load_hook_types()
+    overrides     = load_cat_overrides()
+    content_df    = apply_cat_overrides(content_df, overrides)
+    hook_types    = load_hook_types()
+    video_manual  = load_video_manual()
 
     # ── SIDEBAR STATUS ────────────────────────────────────────────────────────
     st.sidebar.divider()
@@ -1073,8 +1099,51 @@ def main():
     st.divider()
     st.subheader("📋 Obsidian Callout generieren")
     if period == 'Last 7 Days':
-        callout = build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types)
-        st.caption("Uhrzeit, FYP% und Retention manuell ergänzen. Top/Flop-Notiz und Muster-Zeile manuell befüllen.")
+        _FIELDS_TT = [
+            ('uhrzeit',      'Uhrzeit',      '17:30'),
+            ('laenge',       'Länge',         '60s'),
+            ('fyp',          'FYP%',          '45%'),
+            ('retention',    'Retention',     '35%'),
+            ('watch',        'Ø Watch',       '28s'),
+            ('tt_followers', 'TT Follower',   '+5'),
+        ]
+        _FIELDS_IG = [
+            ('ig_views',     'IG Views',      '1.2k'),
+            ('ig_saves',     'IG Saves',      '23'),
+            ('ig_save_rate', 'IG Save Rate',  '1.8%'),
+            ('ig_followers', 'IG Follower',   '+3'),
+            ('ig_watch',     'IG Ø Watch',    '22s'),
+        ]
+        vm_changed = False
+        with st.expander("✏️ Manuelle Werte eintragen", expanded=True):
+            for _, row in filtered_df.sort_values('Posted Date').iterrows():
+                link  = row.get('Video Link', '')
+                title = str(row.get('Video Title', ''))[:70]
+                m     = video_manual.get(link, {})
+                st.markdown(f"**{title}**")
+                tt_cols = st.columns(len(_FIELDS_TT))
+                for col, (key, label, ph) in zip(tt_cols, _FIELDS_TT):
+                    with col:
+                        val = st.text_input(label, value=m.get(key, ''), key=f"{key}_{link}",
+                                            placeholder=ph, label_visibility="visible")
+                        if val != m.get(key, ''):
+                            video_manual.setdefault(link, {})[key] = val
+                            vm_changed = True
+                ig_cols = st.columns(len(_FIELDS_IG))
+                for col, (key, label, ph) in zip(ig_cols, _FIELDS_IG):
+                    with col:
+                        val = st.text_input(label, value=m.get(key, ''), key=f"{key}_{link}",
+                                            placeholder=ph, label_visibility="visible")
+                        if val != m.get(key, ''):
+                            video_manual.setdefault(link, {})[key] = val
+                            vm_changed = True
+                st.divider()
+        if vm_changed:
+            save_video_manual(video_manual)
+            st.toast("✅ Gespeichert")
+
+        callout = build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual)
+        st.caption("Top/Flop-Notiz und Muster-Zeile manuell befüllen. → ___ Werte nächste Woche nachtragen.")
         st.code(callout, language=None)
     elif period == 'Last 30 Days':
         callout = build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types)

@@ -301,7 +301,7 @@ def get_avg_daily_views(overview_df, period_filter_start=None):
 
 def apply_period_filter(content_df, period, now):
     if period == 'Last 7 Days':
-        cutoff_24h   = datetime.now() - timedelta(hours=24)
+        cutoff_24h   = now - timedelta(hours=24)
         period_start = now - timedelta(days=7)
         base = content_df[
             content_df['Posted Date'].notna() &
@@ -333,7 +333,7 @@ def apply_period_filter(content_df, period, now):
 
 def get_week_over_week(content_df, now):
     """Last 3 videos vs. the 3 before that — independent of period filter."""
-    cutoff_24h = datetime.now() - timedelta(hours=24)
+    cutoff_24h = now - timedelta(hours=24)
     valid = content_df[
         content_df['Posted Date'].notna() &
         (content_df['Posted Date'] <= cutoff_24h)
@@ -728,17 +728,32 @@ def main():
     followers_df = pd.read_csv(followers_path) if followers_path.exists() else None
     activity_df  = pd.read_csv(activity_path)  if activity_path.exists()  else None
 
-    now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
     content_df['Posted Date'] = pd.to_datetime(content_df['Posted Date'], errors='coerce')
     if overview_df  is not None:
         overview_df['Date']  = pd.to_datetime(overview_df['Date'],  errors='coerce')
-        overview_df = overview_df[overview_df['Date'] <= now]
     if followers_df is not None:
         followers_df['Date'] = pd.to_datetime(followers_df['Date'], errors='coerce')
-        followers_df = followers_df[followers_df['Date'] <= now]
     if viewers_df   is not None:
         viewers_df['Date']   = pd.to_datetime(viewers_df['Date'],   errors='coerce')
+
+    # "now" wird aus dem Export selbst abgeleitet (letztes Datum mit echten Daten),
+    # nicht vom System-Datum — sonst driftet "Last 7 Days" vom Stand des CSVs weg,
+    # wenn das Dashboard erst Tage nach dem Export geöffnet wird.
+    anchor_candidates = []
+    if overview_df is not None and len(overview_df):
+        anchor_candidates.append(overview_df['Date'].max())
+    if followers_df is not None and len(followers_df):
+        anchor_candidates.append(followers_df['Date'].max())
+    if len(content_df):
+        anchor_candidates.append(content_df['Posted Date'].max())
+    anchor_candidates = [d for d in anchor_candidates if pd.notna(d)]
+    now = max(anchor_candidates) if anchor_candidates else datetime.now()
+    now = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if overview_df  is not None:
+        overview_df = overview_df[overview_df['Date'] <= now]
+    if followers_df is not None:
+        followers_df = followers_df[followers_df['Date'] <= now]
 
     # Apply persistent overrides
     overrides     = load_cat_overrides()
@@ -873,7 +888,7 @@ def main():
     # ── SHARE RATE TREND ──────────────────────────────────────────────────────
     # Intentionally uses all videos — shows full chronological trend line
     st.subheader("📈 Share Rate Trend (alle Videos chronologisch)")
-    cutoff_trend = datetime.now() - timedelta(hours=24)
+    cutoff_trend = now - timedelta(hours=24)
     trend_df = content_df[
         content_df['Posted Date'].notna() &
         (content_df['Posted Date'] <= cutoff_trend)
@@ -909,7 +924,7 @@ def main():
 
     with col_day:
         st.subheader("📅 Best Day to Post")
-        cutoff_24h_day = datetime.now() - timedelta(hours=24)
+        cutoff_24h_day = now - timedelta(hours=24)
 
         # FIX: Use filtered_df for period-sensitive analysis.
         # Last 7 Days only has 3 videos max → not enough per weekday → fall back to All Time.

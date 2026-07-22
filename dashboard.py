@@ -256,13 +256,19 @@ def get_actions(metric_type, status):
     return actions.get(metric_type, {}).get(status, [])
 
 
-def get_follower_growth(followers_df, period, now):
+def get_follower_growth(followers_df, period, now, custom_range=None):
     if followers_df is None or len(followers_df) == 0:
         return 0, None, None, "—"
     fs = followers_df.sort_values('Date').dropna(subset=['Date'])
     if len(fs) == 0:
         return 0, None, None, "—"
-    if period == 'Last 7 Days':
+    if period == 'Custom' and custom_range:
+        start, end = custom_range
+        window = fs[(fs['Date'] >= start) & (fs['Date'] <= end)]
+        growth = int(window['Daily Growth'].sum())
+        label  = f"+{growth} ({fmt_date(start,'numeric')}–{fmt_date(end,'numeric')})"
+        d_from, d_to = window['Date'].min(), window['Date'].max()
+    elif period == 'Last 7 Days':
         max_date = fs['Date'].max()
         cutoff   = max_date - timedelta(days=7)
         window   = fs[fs['Date'] > cutoff]
@@ -299,8 +305,15 @@ def get_avg_daily_views(overview_df, period_filter_start=None):
     return int(real['Views'].mean())
 
 
-def apply_period_filter(content_df, period, now):
-    if period == 'Last 7 Days':
+def apply_period_filter(content_df, period, now, custom_range=None):
+    if period == 'Custom' and custom_range:
+        start, end = custom_range
+        end_of_day = end.replace(hour=23, minute=59, second=59)
+        filtered = content_df[content_df['Posted Date'].notna() &
+                              (content_df['Posted Date'] >= start) &
+                              (content_df['Posted Date'] <= end_of_day)].copy()
+        return filtered, start, None
+    elif period == 'Last 7 Days':
         cutoff_24h   = now - timedelta(hours=24)
         period_start = now - timedelta(days=7)
         base = content_df[
@@ -356,7 +369,7 @@ def get_week_over_week(content_df, now):
     }
 
 
-def generate_insights(filtered_df, viewers_df, followers_df, period, now):
+def generate_insights(filtered_df, viewers_df, followers_df, period, now, custom_range=None):
     insights = []
     if len(filtered_df) > 0:
         top = filtered_df.nlargest(1, 'Video Views').iloc[0]
@@ -391,7 +404,7 @@ def generate_insights(filtered_df, viewers_df, followers_df, period, now):
                     f"Schwächste: {worst} ({int(cat_avg[worst]):,})"
                 )
     if followers_df is not None:
-        growth, _, _, label = get_follower_growth(followers_df, period, now)
+        growth, _, _, label = get_follower_growth(followers_df, period, now, custom_range)
         if growth > 0:
             insights.append(f"👥 <strong>{label} Follower</strong>")
     return insights
@@ -448,7 +461,7 @@ def apply_cat_overrides(df, overrides):
 
 # ── CALLOUT GENERATOR ────────────────────────────────────────────────────────
 
-def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual=None):
+def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual=None, custom_range=None):
     today     = now.strftime("%d.%m.%Y")
     avg_share     = filtered_df['Share Rate'].mean()
     avg_eng       = filtered_df['Engagement Rate'].mean()
@@ -502,7 +515,10 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
 
     fol_str = "—"
     if followers_df is not None:
-        growth, _, _, _ = get_follower_growth(followers_df, 'Last 7 Days', now)
+        if custom_range:
+            growth, _, _, _ = get_follower_growth(followers_df, 'Custom', now, custom_range)
+        else:
+            growth, _, _, _ = get_follower_growth(followers_df, 'Last 7 Days', now)
         if growth > 0: fol_str = f"+{growth}"
 
     post_time_str = "17:30"
@@ -590,25 +606,29 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
     )
 
 
-def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types):
+def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types, custom_range=None):
     today = now.strftime("%d.%m.%Y")
 
-    # Follower total + 30d growth
+    # Follower total + growth (30d, or custom range if given)
     fol_total_str = "—"
     fol_growth_str = "—"
     if followers_df is not None and len(followers_df) > 0:
         fs = followers_df.sort_values('Date').dropna(subset=['Date'])
         if len(fs) > 0:
             fol_total_str = f"{int(fs.iloc[-1]['Followers']):,}"
-        growth, _, _, _ = get_follower_growth(followers_df, 'Last 30 Days', now)
+        if custom_range:
+            growth, _, _, _ = get_follower_growth(followers_df, 'Custom', now, custom_range)
+        else:
+            growth, _, _, _ = get_follower_growth(followers_df, 'Last 30 Days', now)
         fol_growth_str = f"+{growth}" if growth > 0 else str(growth)
 
-    # Total views + Ø daily views (30d)
+    # Total views + Ø daily views (30d, or custom range if given)
     total_views = int(filtered_df['Video Views'].sum())
     avg_daily_str = "—"
     if overview_df is not None and len(overview_df) > 0:
-        cutoff = now - timedelta(days=30)
-        ov = overview_df[(overview_df['Date'] >= cutoff) & (overview_df['Views'] > 0)]
+        cutoff = custom_range[0] if custom_range else now - timedelta(days=30)
+        end    = custom_range[1] if custom_range else now
+        ov = overview_df[(overview_df['Date'] >= cutoff) & (overview_df['Date'] <= end) & (overview_df['Views'] > 0)]
         if len(ov) > 0:
             avg_daily_str = f"{int(ov['Views'].mean()):,}"
 
@@ -772,9 +792,29 @@ def main():
 
     # ── PERIOD FILTER ─────────────────────────────────────────────────────────
     period = st.radio("📅 Period",
-                      ['All Time', 'Last 3 Months', 'Last 30 Days', 'Last 7 Days'],
+                      ['All Time', 'Last 3 Months', 'Last 30 Days', 'Last 7 Days', 'Custom'],
                       horizontal=True)
-    filtered_df, period_start, filter_hint = apply_period_filter(content_df, period, now)
+
+    custom_range = None
+    if period == 'Custom':
+        min_date = content_df['Posted Date'].min()
+        min_date = min_date.date() if pd.notna(min_date) else now.date()
+        max_date = now.date()
+        default_start = max(min_date, (now - timedelta(days=7)).date())
+        col_from, col_to = st.columns(2)
+        with col_from:
+            date_from = st.date_input("Von", value=default_start,
+                                      min_value=min_date, max_value=max_date)
+        with col_to:
+            date_to = st.date_input("Bis", value=max_date,
+                                    min_value=min_date, max_value=max_date)
+        if date_from > date_to:
+            st.warning("⚠️ 'Von' liegt nach 'Bis' — Daten wurden vertauscht.")
+            date_from, date_to = date_to, date_from
+        custom_range = (datetime.combine(date_from, datetime.min.time()),
+                        datetime.combine(date_to, datetime.min.time()))
+
+    filtered_df, period_start, filter_hint = apply_period_filter(content_df, period, now, custom_range)
 
     if len(filtered_df) == 0:
         st.warning(f"⚠️ Keine Videos im Zeitraum {period}")
@@ -815,7 +855,7 @@ def main():
 
     # ── INSIGHTS ──────────────────────────────────────────────────────────────
     st.subheader("🔍 Diese Woche")
-    insights = generate_insights(filtered_df, viewers_df, followers_df, period, now)
+    insights = generate_insights(filtered_df, viewers_df, followers_df, period, now, custom_range)
     st.markdown("<div class='insight-box'>" + "<br>".join(insights) + "</div>", unsafe_allow_html=True)
     st.divider()
 
@@ -863,7 +903,7 @@ def main():
         if followers_df is not None:
             fs_latest   = followers_df.sort_values('Date').dropna(subset=['Date'])
             latest_fol  = int(fs_latest.iloc[-1]['Followers']) if len(fs_latest) > 0 else 0
-            _, _, _, dl = get_follower_growth(followers_df, period, now)
+            _, _, _, dl = get_follower_growth(followers_df, period, now, custom_range)
             st.metric("Followers", f"{latest_fol:,}", dl)
         else:
             st.metric("Followers", "—")
@@ -1014,6 +1054,7 @@ def main():
         'Last 30 Days':  '🏆 Top Videos — letzte 30 Tage',
         'Last 3 Months': '🏆 Top Videos — letztes Quartal',
         'All Time':      '🏆 Top Videos — All Time',
+        'Custom':        f"🏆 Top Videos — {fmt_date(custom_range[0],'numeric')}–{fmt_date(custom_range[1],'numeric')}" if custom_range else '🏆 Top Videos',
     }.get(period, '🏆 Top Videos')
     st.subheader(top_label)
 
@@ -1157,7 +1198,18 @@ def main():
     # ── CALLOUT GENERATOR ─────────────────────────────────────────────────────
     st.divider()
     st.subheader("📋 Obsidian Callout generieren")
+    callout_mode = None
     if period == 'Last 7 Days':
+        callout_mode = 'weekly'
+    elif period == 'Last 30 Days':
+        callout_mode = 'monthly'
+    elif period == 'Custom' and custom_range:
+        span_days = (custom_range[1] - custom_range[0]).days
+        callout_mode = 'weekly' if span_days <= 10 else 'monthly'
+        st.caption(f"📌 Custom-Zeitraum ({span_days} Tage) → "
+                   f"{'Wochen' if callout_mode == 'weekly' else 'Monats'}-Callout verwendet.")
+
+    if callout_mode == 'weekly':
         _FIELDS_TT = [
             ('uhrzeit',      'Uhrzeit',      '17:30'),
             ('laenge',       'Länge',         '60s'),
@@ -1202,11 +1254,13 @@ def main():
             save_video_manual(video_manual)
             st.toast("✅ Gespeichert")
 
-        callout = build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual)
+        callout = build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual,
+                                custom_range=custom_range if period == 'Custom' else None)
         st.caption("Top/Flop-Notiz und Muster-Zeile manuell befüllen. → ___ Werte nächste Woche nachtragen.")
         st.code(callout, language=None)
-    elif period == 'Last 30 Days':
-        callout = build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types)
+    elif callout_mode == 'monthly':
+        callout = build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types,
+                                      custom_range=custom_range if period == 'Custom' else None)
         st.caption("Ø Watchtime und Ø FYP pro Blueprint manuell ergänzen. Bestätigt/Widerlegt/Hypothese selbst ausfüllen.")
         st.code(callout, language=None)
     else:

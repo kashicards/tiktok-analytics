@@ -533,6 +533,8 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
 
     vids = filtered_df.sort_values('Posted Date').copy()
     table_rows = []
+    drop_rows = []
+    vo_blocks = []
     for _, row in vids.iterrows():
         raw_title = str(row['Video Title'])
         title     = (raw_title[:52] + "…") if len(raw_title) > 52 else raw_title
@@ -570,12 +572,41 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         ig_share_rate = f"{_ig_num(ig_shares) / ig_views_num * 100:.2f}%" if ig_views_num > 0 else '___'
         table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} {uhrzeit} | {laenge} | {fyp} | {views:,} → ___ | {saves:,} → ___ | {save_rate} | {retention} → ___ | {watch} → ___ | {tt_fol} → ___ | {ig_views} → ___ | {ig_saves} → ___ | {ig_shares} → ___ | {ig_sr} | {ig_share_rate} | {ig_fol} → ___ | {ig_watch} |")
 
+        absprung      = mv.get('absprung', '')
+        absprung_text = mv.get('absprung_text', '')
+        if absprung or absprung_text:
+            drop_rows.append(f"> | {title} | {absprung or '___'} | {absprung_text or '___'} |")
+
+        voiceover = (mv.get('voiceover', '') or '').strip()
+        if voiceover:
+            vo_title = raw_title[:70] + ("…" if len(raw_title) > 70 else "")
+            vo_lines = "\n".join(f"> > {line}" for line in voiceover.splitlines() if line.strip())
+            vo_blocks.append(f"> **{vo_title}**\n{vo_lines}")
+
     table = "\n".join(table_rows)
+    drop_table = "\n".join(drop_rows)
     top_title  = str(top['Video Title'])[:60]
     flop_title = str(flop['Video Title'])[:60]
 
+    drop_section = (
+        f"> 🔻 **Absprungmomente** _(Stelle im Video, an der Zuschauer abspringen — für Musteranalyse über Zeit)_\n"
+        f">\n"
+        f"> | Video | Absprung-Sek | Text/Szene an dem Punkt |\n"
+        f"> | --- | --- | --- |\n"
+        f"{drop_table}\n"
+        f">\n"
+    ) if drop_rows else ""
+
+    voiceover_section = (
+        f"> 📝 **Voiceover-Texte** _(pro Video, für spätere Muster-/Absprunganalyse)_\n"
+        f">\n"
+        f"{chr(10).join(vo_blocks)}\n"
+        f">\n"
+    ) if vo_blocks else ""
+
     return (
         f"> [!tiktok]+ {today}\n"
+        f"> _📅 Kontoweit, Ø/Summe aller Videos dieser Woche (nicht einzelne Videos)_\n"
         f">\n"
         f"> | Metrik | TikTok | IG | Status |\n"
         f"> | --- | --- | --- | --- |\n"
@@ -586,20 +617,24 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         f"> | Engagement | {avg_eng:.1f}% | — | {eng_status} |\n"
         f"> | Returning Viewers | {ret_str} | — | {ret_status} |\n"
         f"> | Optimale Postzeit | {post_time_str} | — | |\n"
+        f"> _Save Rate = Saves ÷ Views · Share Rate = Shares ÷ Views · Engagement = (Likes+Comments+Shares) ÷ Views · Returning Viewers = wiederkehrende ÷ alle Zuschauer · alles Ø kontoweit über die Woche_\n"
         f">\n"
         f"> 🏆 **Top:** \"{top_title}…\"\n"
         f"> ↳ _\n"
         f"> 📉 **Flop:** \"{flop_title}…\"\n"
         f"> ↳ _\n"
         f">\n"
-        f"> 📊 **Video-Details:**\n"
+        f"> 📊 **Video-Details** _(pro Video, {len(vids)} Video{'s' if len(vids) != 1 else ''} diese Woche):_\n"
         f">\n"
         f"> | Video | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Shares | IG Save Rate | IG Share Rate | IG New Followers | IG Ø Watch |\n"
         f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
         f"{table}\n"
+        f"> _FYP = Anteil For-You-Page-Traffic · Save/Share Rate je Video = Saves bzw. Shares ÷ Views dieses Videos · Werte nach \"→\" sind Platzhalter zum Nachtragen, wenn das Video weiter wächst_\n"
         f">\n"
         f"> ↳ _Noch steigende Videos nächste Woche nachtragen_\n"
         f">\n"
+        f"{drop_section}"
+        f"{voiceover_section}"
         f"> 🧪 **Letzter Test:** \n"
         f"> 🔬 **Nächste Woche:** \n"
         f"> 🔗 **Muster:** _"
@@ -676,6 +711,7 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
 
     return (
         f"> [!tiktok-month]+ {today}\n"
+        f"> _📆 Kontoweit, Ø/Summe aller Videos im gewählten Monatszeitraum_\n"
         f">\n"
         f"> 👥 **Follower:** {fol_total_str} ({fol_growth_str})\n"
         f"> 👁 **Views (30d):** {total_views:,}\n"
@@ -687,10 +723,12 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
         f"> 📸 **IG Views:** ___\n"
         f"> 💾 **IG Saves:** ___\n"
         f"> ⏱ **IG Ø Watch:** ___\n"
+        f"> _Engagement = (Likes+Comments+Shares) ÷ Views · Share/Save Rate = Shares bzw. Saves ÷ Views · Returning Viewers = wiederkehrende ÷ alle Zuschauer_\n"
         f">\n"
         f"> | Blueprint | Videos | Ø Views | Ø Save Rate | Ø Watchtime | Ø FYP |\n"
         f"> | --- | --- | --- | --- | --- | --- |\n"
         f"{blueprint_table}\n"
+        f"> _Blueprint = Videos gruppiert nach Hook-Typ, sortiert nach Ø Views · FYP = Anteil For-You-Page-Traffic_\n"
         f">\n"
         f"> 📊 **Top-Kategorie:** {top_cat} — Ø {top_cat_views} Views\n"
         f">\n"
@@ -1218,6 +1256,7 @@ def main():
             ('retention',    'Retention',     '35%'),
             ('watch',        'Ø Watch',       '28s'),
             ('tt_followers', 'TT Follower',   '+5'),
+            ('absprung',     'Absprung-Sek',  '0:03'),
         ]
         _FIELDS_IG = [
             ('ig_views',     'IG Views',      '1.2k'),
@@ -1249,6 +1288,20 @@ def main():
                         if val != m.get(key, ''):
                             video_manual.setdefault(link, {})[key] = val
                             vm_changed = True
+                drop_cols = st.columns(2)
+                with drop_cols[0]:
+                    val = st.text_input("Text/Szene bei Absprung", value=m.get('absprung_text', ''),
+                                        key=f"absprung_text_{link}", placeholder="z.B. 'abstrakter Begriff X' / Szenenwechsel")
+                    if val != m.get('absprung_text', ''):
+                        video_manual.setdefault(link, {})['absprung_text'] = val
+                        vm_changed = True
+                with drop_cols[1]:
+                    val = st.text_area("Voiceover-Text (für Musteranalyse über Zeit)", value=m.get('voiceover', ''),
+                                       key=f"voiceover_{link}", height=68,
+                                       placeholder="Kompletter VO-Text, um später Absprung mit Formulierungen zu korrelieren")
+                    if val != m.get('voiceover', ''):
+                        video_manual.setdefault(link, {})['voiceover'] = val
+                        vm_changed = True
                 st.divider()
         if vm_changed:
             save_video_manual(video_manual)

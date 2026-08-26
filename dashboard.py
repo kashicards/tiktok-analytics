@@ -578,10 +578,9 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
             drop_rows.append(f"> | {title} | {absprung or '___'} | {absprung_text or '___'} |")
 
         voiceover = (mv.get('voiceover', '') or '').strip()
-        if voiceover:
-            vo_title = raw_title[:70] + ("…" if len(raw_title) > 70 else "")
-            vo_lines = "\n".join(f"> > {line}" for line in voiceover.splitlines() if line.strip())
-            vo_blocks.append(f"> **{vo_title}**\n{vo_lines}")
+        vo_title = raw_title[:70] + ("…" if len(raw_title) > 70 else "")
+        vo_lines = "\n".join(f"> > {line}" for line in voiceover.splitlines() if line.strip()) if voiceover else "> > _"
+        vo_blocks.append(f"> **{vo_title}**\n{vo_lines}")
 
     table = "\n".join(table_rows)
     drop_table = "\n".join(drop_rows)

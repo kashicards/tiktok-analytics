@@ -540,8 +540,7 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         title     = (raw_title[:52] + "…") if len(raw_title) > 52 else raw_title
         cat       = row.get('Category', '—')
         link      = row.get('Video Link', '')
-        hook      = hook_types.get(link, '')
-        hook_tag  = f" [{hook}]" if hook and hook != "—" else ""
+        blueprint = hook_types.get(link, '—')
         wd        = WEEKDAY_DE.get(row['Posted Date'].weekday(), '') if pd.notna(row['Posted Date']) else ''
         views     = int(row['Video Views'])
         saves     = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
@@ -570,7 +569,7 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         ig_views_num  = _ig_num(ig_views)
         ig_sr         = f"{_ig_num(ig_saves)  / ig_views_num * 100:.2f}%" if ig_views_num > 0 else '___'
         ig_share_rate = f"{_ig_num(ig_shares) / ig_views_num * 100:.2f}%" if ig_views_num > 0 else '___'
-        table_rows.append(f"> | {title}{hook_tag} | {cat} | {wd} {uhrzeit} | {laenge} | {fyp} | {views:,} → ___ | {saves:,} → ___ | {save_rate} | {retention} → ___ | {watch} → ___ | {tt_fol} → ___ | {ig_views} → ___ | {ig_saves} → ___ | {ig_shares} → ___ | {ig_sr} | {ig_share_rate} | {ig_fol} → ___ | {ig_watch} |")
+        table_rows.append(f"> | {title} | {blueprint} | {cat} | {wd} {uhrzeit} | {laenge} | {fyp} | {views:,} → ___ | {saves:,} → ___ | {save_rate} | {retention} → ___ | {watch} → ___ | {tt_fol} → ___ | {ig_views} → ___ | {ig_saves} → ___ | {ig_shares} → ___ | {ig_sr} | {ig_share_rate} | {ig_fol} → ___ | {ig_watch} |")
 
         absprung      = mv.get('absprung', '')
         absprung_text = mv.get('absprung_text', '')
@@ -625,8 +624,8 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
         f">\n"
         f"> 📊 **Video-Details** _(pro Video, {len(vids)} Video{'s' if len(vids) != 1 else ''} diese Woche):_\n"
         f">\n"
-        f"> | Video | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Shares | IG Save Rate | IG Share Rate | IG New Followers | IG Ø Watch |\n"
-        f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        f"> | Video | Blueprint | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Shares | IG Save Rate | IG Share Rate | IG New Followers | IG Ø Watch |\n"
+        f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
         f"{table}\n"
         f"> _FYP = Anteil For-You-Page-Traffic · Save/Share Rate je Video = Saves bzw. Shares ÷ Views dieses Videos · Werte nach \"→\" sind Platzhalter zum Nachtragen, wenn das Video weiter wächst_\n"
         f">\n"
@@ -640,7 +639,7 @@ def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_
     )
 
 
-def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types, custom_range=None):
+def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types, video_manual=None, custom_range=None):
     today = now.strftime("%d.%m.%Y")
 
     # Follower total + growth (30d, or custom range if given)
@@ -678,16 +677,70 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
     avg_eng   = filtered_df['Engagement Rate'].mean()
     avg_share = filtered_df['Share Rate'].mean()
 
+    # Manuelle Werte (aus den weekly Callouts gepflegt) über den Monats-Zeitraum aggregieren,
+    # statt sie erneut als Platzhalter abzufragen — video_manual ist bereits pro Video/Woche befüllt.
+    def _parse_num(val):
+        try:
+            return float(str(val or '0').replace(',', '').replace('k', '000').replace('K', '000'))
+        except (ValueError, AttributeError):
+            return 0.0
+
+    def _parse_unit(val):
+        s = str(val or '').strip().rstrip('%s')
+        try:
+            return float(s.replace(',', '.'))
+        except ValueError:
+            return None
+
+    total_saves_agg = 0
+    ig_views_sum = 0.0
+    ig_saves_sum = 0.0
+    ig_watch_vals = []
+    per_video_watch = {}
+    per_video_fyp = {}
+    for _, row in filtered_df.iterrows():
+        link = row.get('Video Link', '')
+        mv = (video_manual or {}).get(link, {})
+        tt_saves_export = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
+        try:
+            manual_saves = int(float(str(mv.get('tt_saves', '') or '0').replace(',', '')))
+        except (ValueError, AttributeError):
+            manual_saves = 0
+        total_saves_agg += max(tt_saves_export, manual_saves)
+        ig_views_sum += _parse_num(mv.get('ig_views'))
+        ig_saves_sum += _parse_num(mv.get('ig_saves'))
+        w = _parse_unit(mv.get('ig_watch'))
+        if w is not None:
+            ig_watch_vals.append(w)
+        per_video_watch[link] = _parse_unit(mv.get('watch'))
+        per_video_fyp[link]   = _parse_unit(mv.get('fyp'))
+
+    avg_save_rate_month = (total_saves_agg / total_views * 100) if total_saves_agg > 0 and total_views > 0 else None
+    save_rate_str = f"Ø {avg_save_rate_month:.2f}%" if avg_save_rate_month is not None else "___"
+    ig_views_str  = f"{int(ig_views_sum):,}" if ig_views_sum > 0 else "___"
+    ig_saves_str  = f"{int(ig_saves_sum):,}" if ig_saves_sum > 0 else "___"
+    ig_watch_str  = f"Ø {sum(ig_watch_vals) / len(ig_watch_vals):.0f}s" if ig_watch_vals else "___"
+
     # Blueprint table — grouped by hook type, sorted by Ø Views desc
     vids = filtered_df.copy()
     if 'Video Link' in vids.columns:
         vids['_hook'] = vids['Video Link'].map(hook_types).fillna('—')
+        vids['_watch'] = vids['Video Link'].map(per_video_watch)
+        vids['_fyp']   = vids['Video Link'].map(per_video_fyp)
     else:
         vids['_hook'] = '—'
+        vids['_watch'] = None
+        vids['_fyp']   = None
     has_saves_month = 'Saves' in vids.columns and vids['Saves'].sum() > 0
+    has_watch_month = vids['_watch'].notna().any()
+    has_fyp_month   = vids['_fyp'].notna().any()
     _bp_agg = {'count': ('Video Views', 'count'), 'avg_views': ('Video Views', 'mean')}
     if has_saves_month:
         _bp_agg['avg_save'] = ('Save Rate', 'mean')
+    if has_watch_month:
+        _bp_agg['avg_watch'] = ('_watch', 'mean')
+    if has_fyp_month:
+        _bp_agg['avg_fyp'] = ('_fyp', 'mean')
     bp = (vids.groupby('_hook')
               .agg(**_bp_agg)
               .reset_index()
@@ -697,9 +750,11 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
     for i, (_, r) in enumerate(bp.iterrows()):
         num  = circled[i] if i < len(circled) else f"{i+1}."
         hook = r['_hook']
-        save_cell = f"{r['avg_save']:.2f}%" if has_saves_month and 'avg_save' in r.index else "___"
+        save_cell  = f"{r['avg_save']:.2f}%" if has_saves_month and pd.notna(r.get('avg_save')) else "___"
+        watch_cell = f"{r['avg_watch']:.0f}s" if has_watch_month and pd.notna(r.get('avg_watch')) else "___"
+        fyp_cell   = f"{r['avg_fyp']:.0f}%" if has_fyp_month and pd.notna(r.get('avg_fyp')) else "___"
         bp_rows.append(
-            f"> | {num} {hook} | {int(r['count'])} | {int(r['avg_views']):,} | {save_cell} | ___ | ___ |"
+            f"> | {num} {hook} | {int(r['count'])} | {int(r['avg_views']):,} | {save_cell} | {watch_cell} | {fyp_cell} |"
         )
     blueprint_table = "\n".join(bp_rows) if bp_rows else "> | — | — | — | — | — | — |"
 
@@ -718,10 +773,10 @@ def build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now,
         f"> 🔄 **Returning Viewers:** {ret_str}\n"
         f"> 💬 **Ø Engagement:** {avg_eng:.1f}%\n"
         f"> 📤 **Ø Share Rate:** {avg_share:.2f}%\n"
-        f"> 🔖 **Ø Save Rate:** ___\n"
-        f"> 📸 **IG Views:** ___\n"
-        f"> 💾 **IG Saves:** ___\n"
-        f"> ⏱ **IG Ø Watch:** ___\n"
+        f"> 🔖 **Ø Save Rate:** {save_rate_str}\n"
+        f"> 📸 **IG Views:** {ig_views_str}\n"
+        f"> 💾 **IG Saves:** {ig_saves_str}\n"
+        f"> ⏱ **IG Ø Watch:** {ig_watch_str}\n"
         f"> _Engagement = (Likes+Comments+Shares) ÷ Views · Share/Save Rate = Shares bzw. Saves ÷ Views · Returning Viewers = wiederkehrende ÷ alle Zuschauer_\n"
         f">\n"
         f"> | Blueprint | Videos | Ø Views | Ø Save Rate | Ø Watchtime | Ø FYP |\n"
@@ -1265,12 +1320,23 @@ def main():
             ('ig_watch',     'IG Ø Watch',    '22s'),
         ]
         vm_changed = False
+        ht_changed_weekly = False
         with st.expander("✏️ Manuelle Werte eintragen", expanded=True):
             for _, row in filtered_df.sort_values('Posted Date').iterrows():
                 link  = row.get('Video Link', '')
                 title = str(row.get('Video Title', ''))[:70]
                 m     = video_manual.get(link, {})
-                st.markdown(f"**{title}**")
+                c_title, c_hook = st.columns([5, 2])
+                with c_title:
+                    st.markdown(f"**{title}**")
+                with c_hook:
+                    current_hook = hook_types.get(link, '—')
+                    hook_idx = HOOK_TYPE_OPTIONS.index(current_hook) if current_hook in HOOK_TYPE_OPTIONS else 0
+                    new_hook = st.selectbox("Hook-Typ", HOOK_TYPE_OPTIONS, index=hook_idx,
+                                            key=f"ht_weekly_{link}", label_visibility="collapsed")
+                    if new_hook != current_hook:
+                        hook_types[link] = new_hook
+                        ht_changed_weekly = True
                 tt_cols = st.columns(len(_FIELDS_TT))
                 for col, (key, label, ph) in zip(tt_cols, _FIELDS_TT):
                     with col:
@@ -1305,15 +1371,18 @@ def main():
         if vm_changed:
             save_video_manual(video_manual)
             st.toast("✅ Gespeichert")
+        if ht_changed_weekly:
+            save_hook_types(hook_types)
+            st.toast("✅ Hook-Typ gespeichert")
 
         callout = build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual,
                                 custom_range=custom_range if period == 'Custom' else None)
         st.caption("Top/Flop-Notiz und Muster-Zeile manuell befüllen. → ___ Werte nächste Woche nachtragen.")
         st.code(callout, language=None)
     elif callout_mode == 'monthly':
-        callout = build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types,
+        callout = build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types, video_manual,
                                       custom_range=custom_range if period == 'Custom' else None)
-        st.caption("Ø Watchtime und Ø FYP pro Blueprint manuell ergänzen. Bestätigt/Widerlegt/Hypothese selbst ausfüllen.")
+        st.caption("Werte ohne weekly-Eintrag bleiben ___ (in Last 7 Days nachtragen). Bestätigt/Widerlegt/Hypothese selbst ausfüllen.")
         st.code(callout, language=None)
     else:
         st.info("💡 Wechsle zu **Last 7 Days** oder **Last 30 Days** für den Callout.")

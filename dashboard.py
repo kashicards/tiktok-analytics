@@ -98,7 +98,7 @@ def fmt_date(dt, fmt='short'):
     return str(dt)[:10]
 
 
-def smart_parse_dates(series):
+def smart_parse_dates(series, chronological=False):
     month_map = {
         'Januar': 1, 'Februar': 2, 'März': 3, 'April': 4,
         'Mai': 5, 'Juni': 6, 'Juli': 7, 'August': 8,
@@ -122,33 +122,53 @@ def smart_parse_dates(series):
                 return int(p1_clean), m
         return None, None
 
-    months = []
-    for val in series.dropna():
-        parts = str(val).strip().split()
-        if len(parts) >= 2:
-            _, m = extract_day_month(parts)
-            if m: months.append(m)
-    spans_year_boundary = (1 in months and 12 in months)
-
-    def parse_one(date_str):
+    def day_month(date_str):
         if pd.isna(date_str) or str(date_str).strip() in ('undefined', ''):
-            return pd.NaT
+            return None, None
         parts = str(date_str).strip().split()
-        if len(parts) < 2: return pd.NaT
+        if len(parts) < 2: return None, None
+        return extract_day_month(parts)
+
+    def most_recent(day, month):
+        # Exporte haben kein Jahr → jüngstes Vorkommen, das nicht in der Zukunft liegt
         try:
-            day, month = extract_day_month(parts)
+            parsed = datetime(now.year, month, day)
+        except ValueError:  # 29. Feb in Nicht-Schaltjahr
+            return datetime(now.year - 1, month, day)
+        if parsed > now + timedelta(days=1):
+            parsed = datetime(now.year - 1, month, day)
+        return parsed
+
+    if not chronological:
+        def parse_one(date_str):
+            day, month = day_month(date_str)
             if day is None or month is None:
                 return pd.NaT
-            year = now.year
-            if spans_year_boundary and month >= 10:
-                year = now.year - 1
-            parsed = datetime(year, month, day)
-            if parsed > now + timedelta(days=60):
-                parsed = datetime(year - 1, month, day)
-            return parsed
-        except:
-            return pd.NaT
-    return series.apply(parse_one)
+            try:
+                return most_recent(day, month)
+            except ValueError:
+                return pd.NaT
+        return series.apply(parse_one)
+
+    # Tagesexporte (Overview/Viewers/Followers) decken 365 Tage lückenlos ab und
+    # sind alt → neu sortiert. Letzte Zeile = jüngstes Datum; rückwärts laufend
+    # springt das Jahr eins zurück, sobald das Datum im Kalender "größer" wird.
+    result = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
+    year, prev = None, None
+    for idx in reversed(series.index):
+        day, month = day_month(series[idx])
+        if day is None or month is None:
+            continue
+        try:
+            if year is None:
+                year = most_recent(day, month).year
+            elif (month, day) > prev:
+                year -= 1
+            result[idx] = datetime(year, month, day)
+            prev = (month, day)
+        except ValueError:
+            continue
+    return result
 
 
 def categorize_topic(title):
@@ -1396,6 +1416,10 @@ def _process_uploads(uploaded_files):
 
     for uf in uploaded_files:
         ex = extract_csvs_from_zip(uf)
+        # Pro Datei datieren, solange die Zeilenreihenfolge noch die des Exports ist
+        for key in ('overview', 'viewers', 'followers'):
+            if key in ex and 'Date' in ex[key].columns:
+                ex[key]['Date'] = smart_parse_dates(ex[key]['Date'], chronological=True)
         if 'content'           in ex: all_content.append(ex['content'])
         if 'overview'          in ex: all_overview.append(ex['overview'])
         if 'viewers'           in ex: all_viewers.append(ex['viewers'])
@@ -1431,7 +1455,6 @@ def _process_uploads(uploaded_files):
     if all_overview:
         df = pd.concat(all_overview, ignore_index=True)
         df = df.rename(columns={'Video Views': 'Views'})
-        df['Date'] = smart_parse_dates(df['Date'])
         for col in ['Views', 'Profile Views', 'Likes', 'Comments', 'Shares']:
             if col in df.columns: df[col] = clean_numeric(df[col])
         df = df[df['Views'] > 0].dropna(subset=['Date'])
@@ -1444,7 +1467,6 @@ def _process_uploads(uploaded_files):
         df = df.rename(columns={
             'Total Viewers': 'Total', 'New Viewers': 'New', 'Returning Viewers': 'Returning'
         })
-        df['Date'] = smart_parse_dates(df['Date'])
         for col in ['Total', 'New', 'Returning']:
             if col in df.columns: df[col] = clean_numeric(df[col])
         df = df[df['Total'] > 0].dropna(subset=['Date'])
@@ -1455,7 +1477,6 @@ def _process_uploads(uploaded_files):
     if all_followers:
         df = pd.concat(all_followers, ignore_index=True)
         df = df.rename(columns={'Difference in followers from previous day': 'Daily Growth'})
-        df['Date'] = smart_parse_dates(df['Date'])
         for col in ['Followers', 'Daily Growth']:
             if col in df.columns: df[col] = clean_numeric(df[col])
         df = df[df['Followers'] > 0].dropna(subset=['Date'])

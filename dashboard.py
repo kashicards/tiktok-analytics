@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import zipfile
 import os
 import json
+import re
 from pathlib import Path
 
 st.set_page_config(page_title="DesignParser Analytics", page_icon="📊", layout="wide")
@@ -33,7 +34,7 @@ HOOK_TYPES_FILE    = DATA_DIR / "hook_types.json"
 CAT_OVERRIDES_FILE = DATA_DIR / "category_overrides.json"
 VIDEO_MANUAL_FILE  = DATA_DIR / "video_manual.json"
 
-HOOK_TYPE_OPTIONS    = ["—", "Kontrovers", "Mechanismus", "Regel + Zahl", "Beweis", "Vergleich"]
+HOOK_TYPE_OPTIONS    = ["—", "Statement", "Kontrovers", "Mechanismus", "Regel + Zahl", "Beweis", "Vergleich"]
 CATEGORIES_AVAILABLE = ["Color", "Typography", "Layout", "Psychology", "Brand", "Packaging", "Components", "Performance", "Other"]
 WEEKDAY_DE           = {0: "Mo", 1: "Di", 2: "Mi", 3: "Do", 4: "Fr", 5: "Sa", 6: "So"}
 
@@ -74,6 +75,8 @@ def extract_csvs_from_zip(zip_file):
                             elif 'viewer'            in filename: extracted['viewers']           = df
                             elif 'followerhistory'   in filename: extracted['followers']         = df
                             elif 'followeractivity'  in filename: extracted['follower_activity'] = df
+                            elif 'followergender'    in filename: extracted['gender']            = df
+                            elif 'territor'          in filename: extracted['territories']       = df
                         except:
                             continue
     except:
@@ -481,181 +484,398 @@ def apply_cat_overrides(df, overrides):
 
 # ── CALLOUT GENERATOR ────────────────────────────────────────────────────────
 
-def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual=None, custom_range=None):
-    today     = now.strftime("%d.%m.%Y")
-    avg_share     = filtered_df['Share Rate'].mean()
-    avg_eng       = filtered_df['Engagement Rate'].mean()
-    total_views   = int(filtered_df['Video Views'].sum())
-    # Aggregate saves: prefer manual entries, fall back to TikTok export
-    total_saves_agg = 0
-    for _, row in filtered_df.iterrows():
-        link = row.get('Video Link', '')
-        tt_saves_export = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
-        mv_saves = (video_manual or {}).get(link, {}).get('tt_saves', '')
+def _mnum(val):
+    """Parse manual entries like '1.2k', '1,121', '+5', '33.8%', '21.87s', '0:21', '33,8 %' → float (None if empty)."""
+    s = str(val if val is not None else '').strip().lower()
+    for ch in ('+', '%', ' ', 'sek', 's', '~', '≈'):
+        s = s.replace(ch, '')
+    if not s or s in ('—', '-', '___'):
+        return None
+    if ':' in s:
         try:
-            manual_saves = int(float(str(mv_saves or '0').replace(',', '')))
-        except (ValueError, AttributeError):
-            manual_saves = 0
-        total_saves_agg += max(tt_saves_export, manual_saves)
-    avg_save_rate = (total_saves_agg / total_views * 100) if total_saves_agg > 0 and total_views > 0 else None
-    share_status = "✅" if avg_share >= 0.3 else "⚠️"
-    eng_status   = "✅" if avg_eng   >= 4.0 else "⚠️"
-    save_status  = ("✅" if avg_save_rate >= 1.5 else "⚠️") if avg_save_rate is not None else ""
-    tt_save_str  = f"Ø {avg_save_rate:.2f}%" if avg_save_rate is not None else "___"
+            m, sec = s.split(':', 1)
+            return float(m) * 60 + float(sec)
+        except ValueError:
+            return None
+    mult = 1
+    if s.endswith('k'):
+        mult, s = 1000, s[:-1]
+    if re.fullmatch(r'\d+,\d{1,2}', s):
+        s = s.replace(',', '.')
+    else:
+        s = s.replace(',', '')
+    try:
+        return float(s) * mult
+    except ValueError:
+        return None
 
-    # IG summary: aggregate from per-video manual entries
-    ig_views_sum  = 0.0
-    ig_saves_sum  = 0.0
-    ig_shares_sum = 0.0
-    ig_fol_sum    = 0.0
-    for _, row in filtered_df.iterrows():
-        mv_row = (video_manual or {}).get(row.get('Video Link', ''), {})
-        def _parse(val):
-            try:
-                return float(str(val or '0').replace(',', '').replace('k','000').replace('K','000'))
-            except (ValueError, AttributeError):
-                return 0.0
-        ig_views_sum  += _parse(mv_row.get('ig_views'))
-        ig_saves_sum  += _parse(mv_row.get('ig_saves'))
-        ig_shares_sum += _parse(mv_row.get('ig_shares'))
-        ig_fol_sum    += _parse(mv_row.get('ig_followers'))
-    ig_views_str       = f"{int(ig_views_sum):,}" if ig_views_sum > 0 else "___"
-    ig_save_rate_str   = f"Ø {ig_saves_sum  / ig_views_sum * 100:.2f}%" if ig_views_sum > 0 else "___"
-    ig_share_rate_str  = f"Ø {ig_shares_sum / ig_views_sum * 100:.2f}%" if ig_views_sum > 0 else "—"
-    ig_share_status    = ("✅" if ig_shares_sum / ig_views_sum * 100 >= 0.3 else "⚠️") if ig_views_sum > 0 else ""
-    ig_fol_weekly_str  = f"+{int(ig_fol_sum)}" if ig_fol_sum > 0 else "___"
 
-    ret_str, ret_status = "—", ""
-    if viewers_df is not None and len(viewers_df) > 0:
-        total = viewers_df['Total'].sum()
-        ret   = viewers_df['Returning'].sum()
-        pct   = ret / total * 100 if total > 0 else 0
-        ret_str    = f"{pct:.1f}%"
-        ret_status = "✅" if pct >= 40 else "⚠️"
+def _short_name(raw_title, mv):
+    if (mv.get('kurz') or '').strip():
+        return mv['kurz'].strip()
+    words = re.sub(r'[^\w\s\-]', '', str(raw_title)).split()
+    return " ".join(words[:3]) if words else "Video"
 
-    fol_str = "—"
-    if followers_df is not None:
-        if custom_range:
-            growth, _, _, _ = get_follower_growth(followers_df, 'Custom', now, custom_range)
-        else:
-            growth, _, _, _ = get_follower_growth(followers_df, 'Last 7 Days', now)
-        if growth > 0: fol_str = f"+{growth}"
 
-    post_time_str = "17:30"
-    if activity_df is not None and 'Hour' in activity_df.columns:
-        hourly        = activity_df.groupby('Hour')['Active'].mean()
-        peak_hour     = int(hourly.idxmax())
-        post_hour     = (peak_hour - 1) % 24
-        post_time_str = f"{post_hour}:30"
+def _ratio_arrow(ratio):
+    if ratio is None:
+        return "—"
+    return "⬆️" if ratio >= 1.2 else ("⬇️" if ratio <= 0.8 else "➖")
 
-    top  = filtered_df.nlargest(1,  'Video Views').iloc[0]
-    flop = filtered_df.nsmallest(1, 'Video Views').iloc[0]
 
+def _trend(cur, prev, rel=0.10):
+    if cur is None or prev is None or prev == 0:
+        return "➖"
+    change = (cur - prev) / abs(prev)
+    return "⬆️" if change >= rel else ("⬇️" if change <= -rel else "➖")
+
+
+def _pct_change(cur, prev):
+    if cur is None or prev is None or prev == 0:
+        return ""
+    return f" ({(cur - prev) / prev * 100:+.1f} %)"
+
+
+def _fmt_int(x):
+    return f"{int(round(x)):,}" if x is not None else "___"
+
+
+def _sum_manual(df, video_manual, key):
+    """Sum a manual field over df; None if no video has a value."""
+    vals = [_mnum((video_manual or {}).get(r.get('Video Link', ''), {}).get(key)) for _, r in df.iterrows()]
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
+
+
+def _tt_saves(row, mv):
+    export = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
+    manual = _mnum(mv.get('tt_saves')) or 0
+    return int(max(export, manual))
+
+
+def _territory_str(territories_df, n=5):
+    if territories_df is None or len(territories_df) == 0:
+        return None
+    df = territories_df[~territories_df['Territory'].astype(str).str.lower().isin(['others', 'other'])]
+    df = df.sort_values('Share', ascending=False).head(n)
+    return " / ".join(f"{t} {s * 100:.1f}" for t, s in zip(df['Territory'], df['Share'])) + " %"
+
+
+def _gender_str(gender_df):
+    if gender_df is None or len(gender_df) == 0:
+        return None
+    labels = {'male': 'Männer', 'female': 'Frauen', 'other': 'divers'}
+    parts = []
+    for _, r in gender_df.sort_values('Share', ascending=False).iterrows():
+        if r['Share'] > 0:
+            parts.append(f"{r['Share'] * 100:.1f} % {labels.get(str(r['Gender']).lower(), r['Gender'])}")
+    return " · ".join(parts) if parts else None
+
+
+def build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual=None,
+                  custom_range=None, content_df=None, gender_df=None, territories_df=None):
+    video_manual = video_manual or {}
+    today = now.strftime("%d.%m.%Y")
+
+    # ── Zeitfenster: diese Woche + Vorwoche ──────────────────────────────────
+    if custom_range:
+        week_start = custom_range[0]
+        week_end   = custom_range[1].replace(hour=23, minute=59, second=59)
+    else:
+        week_start = now - timedelta(days=7)
+        week_end   = now.replace(hour=23, minute=59, second=59)
+    span       = week_end - week_start
+    prev_start = week_start - span
     vids = filtered_df.sort_values('Posted Date').copy()
-    table_rows = []
-    drop_rows = []
-    vo_blocks = []
+    n_vids = len(vids)
+
+    prev_vids = None
+    if content_df is not None:
+        prev_vids = content_df[content_df['Posted Date'].notna() &
+                               (content_df['Posted Date'] >= prev_start) &
+                               (content_df['Posted Date'] < week_start)]
+
+    def _week_stats(df):
+        if df is None or len(df) == 0:
+            return None
+        views    = float(df['Video Views'].sum())
+        saves    = float(sum(_tt_saves(r, video_manual.get(r.get('Video Link', ''), {})) for _, r in df.iterrows()))
+        shares   = float(df['Shares'].sum()) if 'Shares' in df.columns else 0.0
+        likes    = float(df['Likes'].sum()) if 'Likes' in df.columns else 0.0
+        comments = float(df['Comments'].sum()) if 'Comments' in df.columns else 0.0
+        ig_views = _sum_manual(df, video_manual, 'ig_views')
+        ig = {k: _sum_manual(df, video_manual, f'ig_{k}') for k in ('saves', 'shares', 'likes', 'comments', 'followers')}
+        rate = lambda num, den: (num / den * 100) if (num is not None and den) else None
+        return {
+            'n': len(df), 'views': views, 'saves': saves, 'shares': shares, 'likes': likes, 'comments': comments,
+            'save_rate': rate(saves, views) if saves > 0 else None,
+            'share_rate': rate(shares, views),
+            'eng': rate(likes + comments + shares, views),
+            'tt_fol_videos': _sum_manual(df, video_manual, 'tt_followers'),
+            'ig_views': ig_views, 'ig': ig,
+            'ig_save_rate': rate(ig['saves'], ig_views),
+            'ig_share_rate': rate(ig['shares'], ig_views),
+            'ig_eng': rate(sum(v or 0 for v in (ig['likes'], ig['comments'], ig['shares'])), ig_views)
+                      if ig_views and ig['likes'] is not None else None,
+        }
+
+    cur  = _week_stats(vids)
+    prev = _week_stats(prev_vids)
+
+    # ── Konto-Werte TikTok ───────────────────────────────────────────────────
+    def _fol_growth(start, end):
+        if followers_df is None or len(followers_df) == 0 or 'Daily Growth' not in followers_df.columns:
+            return None
+        w = followers_df[(followers_df['Date'] > start) & (followers_df['Date'] <= end)]
+        return int(w['Daily Growth'].sum()) if len(w) else None
+
+    def _returning(start, end):
+        if viewers_df is None or len(viewers_df) == 0:
+            return None, None
+        w = viewers_df[(viewers_df['Date'] > start) & (viewers_df['Date'] <= end)]
+        total = w['Total'].sum()
+        if total <= 0:
+            return None, None
+        return w['Returning'].sum() / total * 100, w['New'].sum() / total * 100
+
+    fol_cur, fol_prev = _fol_growth(week_start, week_end), _fol_growth(prev_start, week_start)
+    ret_cur, new_cur  = _returning(week_start, week_end)
+    ret_prev, _       = _returning(prev_start, week_start)
+
+    post_time_str = "___"
+    if activity_df is not None and 'Hour' in activity_df.columns and len(activity_df):
+        hourly        = activity_df.groupby('Hour')['Active'].mean()
+        post_time_str = f"{(int(hourly.idxmax()) - 1) % 24}:30"
+
+    pct = lambda v: f"{v:.2f}%" if v is not None else "___"
+    star = lambda v: f"{v:.2f}%*" if v is not None else "___"
+
+    tt_fol_cell = (f"{fol_cur:+d}" if fol_cur is not None else "___")
+    if cur['tt_fol_videos'] is not None:
+        tt_fol_cell += f" · Σ Videos {int(cur['tt_fol_videos'])}"
+    ig_fol_cell = "netto ___ (+___ / −___)"
+    if cur['ig']['followers'] is not None:
+        ig_fol_cell += f" · Σ Reels {int(cur['ig']['followers'])}"
+
+    fol_status = _trend(fol_cur, fol_prev)
+    if fol_cur is not None and cur['tt_fol_videos'] is not None and abs(fol_cur - cur['tt_fol_videos']) >= max(5, 0.5 * abs(fol_cur)):
+        fol_status = "⚠️"
+
+    ig_views_cell = f"{_fmt_int(cur['ig_views'])} (Σ Reels) · Konto ___" if cur['ig_views'] else "___"
+    prev_ig = prev['ig_views'] if prev else None
+
+    rows = [
+        ("Views", f"{int(cur['views']):,}", ig_views_cell, _trend(cur['views'], prev['views'] if prev else None)),
+        ("New Followers", tt_fol_cell, ig_fol_cell, fol_status),
+        ("Save Rate", pct(cur['save_rate']), star(cur['ig_save_rate']),
+         _trend(cur['save_rate'], prev['save_rate'] if prev else None, 0.15)),
+        ("Share Rate", pct(cur['share_rate']), star(cur['ig_share_rate']),
+         _trend(cur['share_rate'], prev['share_rate'] if prev else None, 0.15)),
+        ("Engagement", pct(cur['eng']), star(cur['ig_eng']),
+         _trend(cur['eng'], prev['eng'] if prev else None, 0.15)),
+        ("Returning Viewers", f"{ret_cur:.1f}%" if ret_cur is not None else "—", "—", _trend(ret_cur, ret_prev)),
+        ("Optimale Postzeit", post_time_str, "___ (Follower-Aktivität)", ""),
+    ]
+    konto_table = "\n".join(f"> | {a} | {b} | {c} | {d} |" for a, b, c, d in rows)
+
+    ig_src = ""
+    if cur['ig_views']:
+        ig = cur['ig']
+        ig_src = (f" · IG-Werte mit * aus Σ der {n_vids} Reels ({_fmt_int(ig['saves'])} Saves, {_fmt_int(ig['shares'])} Shares, "
+                  f"{_fmt_int(ig['likes'])} Likes, {_fmt_int(ig['comments'])} Kommentare ÷ {_fmt_int(cur['ig_views'])} Views)")
+    konto_note = (
+        f"> _Save Rate = Saves ÷ Views · Share Rate = Shares ÷ Views · Engagement = (Likes+Comments+Shares) ÷ Views · "
+        f"Returning Viewers = wiederkehrende ÷ alle Zuschauer · Status = Trend vs. Vorwoche (⬆️/⬇️ ab ±10 % bzw. ±15 % bei Raten, ⚠️ = Werte passen nicht zusammen) · "
+        f"TT aus Σ der {n_vids} Videos ({int(cur['saves']):,} Saves, {int(cur['shares']):,} Shares, {int(cur['likes']):,} Likes, "
+        f"{int(cur['comments']):,} Kommentare ÷ {int(cur['views']):,} Views){ig_src} · "
+        f"IG-Konto: ___ Betrachter, ___ % Nicht-Follower, ___ Profilaufrufe, ___ Link-Taps, Follower gesamt ____"
+    )
+
+    # ── Konsistenzcheck ──────────────────────────────────────────────────────
+    checks = []
+    if fol_cur is not None and cur['tt_fol_videos'] is not None:
+        diff = fol_cur - int(cur['tt_fol_videos'])
+        if diff > 0:
+            checks.append(f"TT New Followers: Σ Videos {int(cur['tt_fol_videos'])} vs. Konto {fol_cur:+d} → {diff} über ältere Videos/Profil")
+        elif diff < 0:
+            checks.append(f"TT New Followers: Σ Videos {int(cur['tt_fol_videos'])} > Konto {fol_cur:+d} → {-diff} Entfolgungen gegengerechnet")
+    missing = {}
+    labels = {'laenge': 'Länge', 'watch': 'Ø Watch', 'fyp': 'FYP', 'ig_views': 'IG Views', 'tt_followers': 'TT Follower'}
+    for _, r in vids.iterrows():
+        mv = video_manual.get(r.get('Video Link', ''), {})
+        gaps = [lab for key, lab in labels.items() if _mnum(mv.get(key)) is None]
+        if gaps:
+            missing[_short_name(r['Video Title'], mv)] = gaps
+    for name, gaps in missing.items():
+        checks.append(f"{name}: fehlt noch {', '.join(gaps)}")
+    checks.append("_")
+    check_lines = "\n".join(f"> - {c}" for c in checks)
+
+    # ── Einordnung vs. Durchschnitt ──────────────────────────────────────────
+    base_tt, base_ig, base_n = None, None, 0
+    if content_df is not None and n_vids:
+        first_post = vids['Posted Date'].min()
+        before = content_df[content_df['Posted Date'].notna() & (content_df['Posted Date'] < first_post)] \
+            .sort_values('Posted Date', ascending=False).head(8)
+        base_n = len(before)
+        if base_n:
+            base_tt = float(before['Video Views'].median())
+            ig_hist = [_mnum(video_manual.get(l, {}).get('ig_views')) for l in before['Video Link']]
+            ig_hist = [v for v in ig_hist if v]
+            if len(ig_hist) >= 3:
+                base_ig = float(pd.Series(ig_hist).median())
+    base_label = f"TT: Median der {base_n} Videos vor der Woche = {_fmt_int(base_tt)}" if base_tt else "TT: ___"
+    base_label += f" · IG: Median = {_fmt_int(base_ig)}" if base_ig else " · IG: \"Deine üblichen Reels\"-Linie"
+
+    # ── Pro-Video-Teile ──────────────────────────────────────────────────────
+    einord, details, table_rows, extra_tt, audience_rows, drop_rows, vo_lines = [], [], [], [], [], [], []
     for _, row in vids.iterrows():
-        raw_title = str(row['Video Title'])
-        title     = (raw_title[:52] + "…") if len(raw_title) > 52 else raw_title
-        cat       = row.get('Category', '—')
         link      = row.get('Video Link', '')
-        blueprint = hook_types.get(link, '—')
-        wd        = WEEKDAY_DE.get(row['Posted Date'].weekday(), '') if pd.notna(row['Posted Date']) else ''
+        mv        = video_manual.get(link, {})
+        raw_title = str(row['Video Title'])
+        name      = _short_name(raw_title, mv)
+        title     = (raw_title[:45] + "…") if len(raw_title) > 45 else raw_title
+        posted    = row['Posted Date']
+        wd        = WEEKDAY_DE.get(posted.weekday(), '') if pd.notna(posted) else ''
+        date_str  = f"{wd} {posted.strftime('%d.%m.')}" if pd.notna(posted) else '—'
         views     = int(row['Video Views'])
-        saves     = int(row['Saves']) if 'Saves' in row and pd.notna(row['Saves']) else 0
-        mv        = (video_manual or {}).get(link, {})
-        try:
-            saves = max(saves, int(float(str(mv.get('tt_saves', '') or '0').replace(',', ''))))
-        except (ValueError, AttributeError):
-            pass
-        save_rate = f"{saves / views * 100:.2f}%" if saves > 0 and views > 0 else "___"
-        uhrzeit   = mv.get('uhrzeit',     '—:—')
-        laenge    = mv.get('laenge',      '___')
-        fyp       = mv.get('fyp',         '___')
-        retention = mv.get('retention',   '___')
-        watch     = mv.get('watch',       '___')
-        tt_fol    = mv.get('tt_followers','___')
-        ig_views  = mv.get('ig_views',    '___')
-        ig_saves  = mv.get('ig_saves',    '___')
-        ig_shares = mv.get('ig_shares',   '___')
-        ig_fol    = mv.get('ig_followers','___')
-        ig_watch  = mv.get('ig_watch',    '___')
-        def _ig_num(val):
-            try:
-                return float(str(val or '0').replace(',', '').replace('k','000').replace('K','000'))
-            except (ValueError, AttributeError):
-                return 0.0
-        ig_views_num  = _ig_num(ig_views)
-        ig_sr         = f"{_ig_num(ig_saves)  / ig_views_num * 100:.2f}%" if ig_views_num > 0 else '___'
-        ig_share_rate = f"{_ig_num(ig_shares) / ig_views_num * 100:.2f}%" if ig_views_num > 0 else '___'
-        table_rows.append(f"> | {title} | {blueprint} | {cat} | {wd} {uhrzeit} | {laenge} | {fyp} | {views:,} → ___ | {saves:,} → ___ | {save_rate} | {retention} → ___ | {watch} → ___ | {tt_fol} → ___ | {ig_views} → ___ | {ig_saves} → ___ | {ig_shares} → ___ | {ig_sr} | {ig_share_rate} | {ig_fol} → ___ | {ig_watch} |")
+        saves     = _tt_saves(row, mv)
+        shares    = int(row['Shares']) if 'Shares' in row and pd.notna(row['Shares']) else 0
+        laenge, watch = _mnum(mv.get('laenge')), _mnum(mv.get('watch'))
+        retention = _mnum(mv.get('retention'))
+        if retention is None and laenge and watch:
+            retention = watch / laenge * 100
+        ig_views  = _mnum(mv.get('ig_views'))
+        ig_saves, ig_shares = _mnum(mv.get('ig_saves')), _mnum(mv.get('ig_shares'))
+        ig_rate   = lambda x: f"{x / ig_views * 100:.2f}%" if (x is not None and ig_views) else "___"
+        fmt_s     = lambda x: f"{x:g} s" if x is not None else "___"
+        ret_str   = f"{retention:.1f} %" if retention is not None else "___"
+        sr_str    = f"{saves / views * 100:.2f} %" if saves and views else "___"
 
-        absprung      = mv.get('absprung', '')
-        absprung_text = mv.get('absprung_text', '')
-        if absprung or absprung_text:
-            drop_rows.append(f"> | {title} | {absprung or '___'} | {absprung_text or '___'} |")
+        r_tt = views / base_tt if base_tt else None
+        r_ig = ig_views / base_ig if (ig_views and base_ig) else None
+        tt_part = f"TT {_ratio_arrow(r_tt)} {r_tt:.2f}×" if r_tt is not None else "TT ___"
+        ig_part = f"IG {_ratio_arrow(r_ig)} {r_ig:.2f}×" if r_ig is not None else "IG ___×"
+        einord.append(f"> - {name} · {tt_part} · {ig_part}")
 
-        voiceover = (mv.get('voiceover', '') or '').strip()
-        vo_title = raw_title[:70] + ("…" if len(raw_title) > 70 else "")
-        vo_lines = "\n".join(f"> > {line}" for line in voiceover.splitlines() if line.strip()) if voiceover else "> > _"
-        vo_blocks.append(f"> **{vo_title}**\n{vo_lines}")
+        extra = " · ".join(x for x in (
+            f"Serie: {mv['serie']}" if (mv.get('serie') or '').strip() else '',
+        ) if x)
+        tt_bits = [f"TT {views:,} Views", f"Retention {ret_str} ({fmt_s(watch)} / {fmt_s(laenge)})",
+                   f"Save Rate {sr_str}", f"{mv.get('tt_followers') or '___'} Follower", f"FYP {mv.get('fyp') or '___'}"]
+        ig_bits = [f"IG {_fmt_int(ig_views)} Views", f"Skip {mv.get('ig_skip') or '___'}",
+                   f"{_fmt_int(ig_saves)} Saves ({ig_rate(ig_saves)})", f"{_fmt_int(ig_shares)} Shares ({ig_rate(ig_shares)})",
+                   f"Ø {mv.get('ig_watch') or '___'}"]
+        note = (mv.get('notiz') or '').strip()
+        note = f" {note}_" if note else "_ ___"
+        details.append(f"> ↳ **{name}** _({date_str}{', ' + extra if extra else ''})_: _{', '.join(tt_bits)}. {', '.join(ig_bits)}.{note}")
 
-    table = "\n".join(table_rows)
-    drop_table = "\n".join(drop_rows)
-    top_title  = str(top['Video Title'])[:60]
-    flop_title = str(flop['Video Title'])[:60]
+        table_rows.append(
+            f"> | {title} | {mv.get('blueprint') or '—'} | {hook_types.get(link, '—')} | {mv.get('einstieg') or '—'} | "
+            f"{row.get('Category', '—')} | {wd} {mv.get('uhrzeit') or '—:—'} | {fmt_s(laenge).replace(' ', '')} | {mv.get('fyp') or '___'} | "
+            f"{views:,} | {f'{saves:,}' if saves else '___'} | {sr_str.replace(' ', '')} | {ret_str.replace(' ', '')} | {fmt_s(watch).replace(' ', '')} | "
+            f"{mv.get('tt_followers') or '___'} | {_fmt_int(ig_views)} | {_fmt_int(ig_saves)} | {_fmt_int(ig_shares)} | "
+            f"{ig_rate(ig_saves)} | {ig_rate(ig_shares)} | {mv.get('ig_followers') or '___'} | {mv.get('ig_watch') or '___'} |"
+        )
+        extra_tt.append(f"{name} {shares} Shares ({row['Share Rate']:.2f} %), Engagement {row['Engagement Rate']:.2f} %")
+
+        audience_rows.append(
+            f"> | {name} | {mv.get('tt_laender') or '___'} | {mv.get('tt_quellen') or '___'} | "
+            f"{mv.get('tt_zuschauer') or '___'} | {mv.get('ig_laender') or '___'} | {mv.get('ig_quellen') or '___'} |"
+        )
+
+        if mv.get('absprung') or mv.get('absprung_text'):
+            drop_rows.append(f"> | {name} | {mv.get('absprung') or '___'} | {mv.get('absprung_text') or '___'} |")
+
+        vo = [l.strip() for l in (mv.get('voiceover') or '').splitlines() if l.strip()]
+        vo_lines.append(f"> - {name}: " + (f"_\"{' / '.join(vo)}\"_" if vo else "_(fehlt noch)_"))
+
+    # ── Publikum & Länder (Konto) ────────────────────────────────────────────
+    terr = _territory_str(territories_df)
+    gend = _gender_str(gender_df)
+    aud_konto = (
+        f"> | Ebene | TikTok | IG |\n"
+        f"> | --- | --- | --- |\n"
+        f"> | Follower-Länder (Konto) | {terr or '___'} | ___ |\n"
+        f"> | Geschlecht (Konto) | {gend or '___'} | ___ |\n"
+        f"> | Zuschauer neu / wiederkehrend | "
+        f"{f'{new_cur:.1f} / {ret_cur:.1f} %' if ret_cur is not None else '—'} | — |\n"
+        f"> | Nicht-Follower-Anteil | — | ___ |\n"
+        f"> | Sprachen | — | ___ |"
+    )
+
+    # ── Auto-Beobachtungen ───────────────────────────────────────────────────
+    circled = "①②③④⑤⑥⑦⑧⑨⑩"
+    obs = []
+    if prev:
+        ig_prev_str = f", IG {_fmt_int(prev_ig)} → {_fmt_int(cur['ig_views'])}{_pct_change(cur['ig_views'], prev_ig)}" \
+            if (prev_ig and cur['ig_views']) else ""
+        obs.append(f"Vorwoche → diese Woche: TT {int(prev['views']):,} → {int(cur['views']):,}"
+                   f"{_pct_change(cur['views'], prev['views'])}{ig_prev_str} ({prev['n']} → {n_vids} Videos).")
+    rets = [(_short_name(r['Video Title'], video_manual.get(r.get('Video Link', ''), {})),
+             _mnum(video_manual.get(r.get('Video Link', ''), {}).get('watch'))) for _, r in vids.iterrows()]
+    rets = [(n, w) for n, w in rets if w is not None]
+    if rets:
+        obs.append("TT Ø Watch: " + " · ".join(f"{n} {w:g} s" for n, w in rets) + ".")
+    if fol_cur is not None and fol_prev is not None:
+        obs.append(f"TT-Follower-Zuwachs {fol_prev:+d} → {fol_cur:+d}.")
+    obs_lines = "\n".join(f"> _{circled[i]} {o}_" for i, o in enumerate(obs))
+    obs_lines += ("\n" if obs else "") + f"> {circled[len(obs)]} ___"
 
     drop_section = (
-        f"> 🔻 **Absprungmomente** _(Stelle im Video, an der Zuschauer abspringen — für Musteranalyse über Zeit)_\n"
+        f"> 🔻 **Absprungmomente**\n"
         f">\n"
         f"> | Video | Absprung-Sek | Text/Szene an dem Punkt |\n"
         f"> | --- | --- | --- |\n"
-        f"{drop_table}\n"
-        f">\n"
+        + "\n".join(drop_rows) + "\n>\n"
     ) if drop_rows else ""
 
-    voiceover_section = (
-        f"> 📝 **Voiceover-Texte** _(pro Video, für spätere Muster-/Absprunganalyse)_\n"
-        f">\n"
-        f"{chr(10).join(vo_blocks)}\n"
-        f">\n"
-    ) if vo_blocks else ""
-
+    plural = 's' if n_vids != 1 else ''
     return (
         f"> [!tiktok]+ {today}\n"
         f"> _📅 Kontoweit, Ø/Summe aller Videos dieser Woche (nicht einzelne Videos)_\n"
         f">\n"
         f"> | Metrik | TikTok | IG | Status |\n"
         f"> | --- | --- | --- | --- |\n"
-        f"> | Views | {total_views:,} | {ig_views_str} | |\n"
-        f"> | New Followers | {fol_str} | {ig_fol_weekly_str} | |\n"
-        f"> | Save Rate | {tt_save_str} | {ig_save_rate_str} | {save_status} |\n"
-        f"> | Share Rate | {avg_share:.2f}% | {ig_share_rate_str} | {share_status} |\n"
-        f"> | Engagement | {avg_eng:.1f}% | — | {eng_status} |\n"
-        f"> | Returning Viewers | {ret_str} | — | {ret_status} |\n"
-        f"> | Optimale Postzeit | {post_time_str} | — | |\n"
-        f"> _Save Rate = Saves ÷ Views · Share Rate = Shares ÷ Views · Engagement = (Likes+Comments+Shares) ÷ Views · Returning Viewers = wiederkehrende ÷ alle Zuschauer · alles Ø kontoweit über die Woche_\n"
+        f"{konto_table}\n"
+        f"{konto_note}\n"
         f">\n"
-        f"> 🏆 **Top:** \"{top_title}…\"\n"
-        f"> ↳ _\n"
-        f"> 📉 **Flop:** \"{flop_title}…\"\n"
-        f"> ↳ _\n"
+        f"> ⚠️ **Konsistenzcheck:**\n"
+        f"{check_lines}\n"
         f">\n"
-        f"> 📊 **Video-Details** _(pro Video, {len(vids)} Video{'s' if len(vids) != 1 else ''} diese Woche):_\n"
+        f"> 🎯 **Einordnung vs. Durchschnitt** _({base_label})_\n"
+        f"{chr(10).join(einord)}\n"
         f">\n"
-        f"> | Video | Blueprint | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Shares | IG Save Rate | IG Share Rate | IG New Followers | IG Ø Watch |\n"
-        f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-        f"{table}\n"
-        f"> _FYP = Anteil For-You-Page-Traffic · Save/Share Rate je Video = Saves bzw. Shares ÷ Views dieses Videos · Werte nach \"→\" sind Platzhalter zum Nachtragen, wenn das Video weiter wächst_\n"
+        f"{chr(10).join(details)}\n"
         f">\n"
-        f"> ↳ _Noch steigende Videos nächste Woche nachtragen_\n"
+        f"> 📊 **Video-Details** _(pro Video, {n_vids} Video{plural} diese Woche):_\n"
+        f">\n"
+        f"> | Video | Blueprint | Hook-Typ | Einstieg | Thema | Uhrzeit | Länge | FYP | TT Views | TT Saves | TT Save Rate | Retention | Ø Watch | TT New Followers | IG Views | IG Saves | IG Shares | IG Save Rate | IG Share Rate | IG New Followers | IG Ø Watch |\n"
+        f"> | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        f"{chr(10).join(table_rows)}\n"
+        f"> _FYP = Anteil For-You-Page-Traffic · Save/Share Rate je Video = Saves bzw. Shares ÷ Views dieses Videos · "
+        f"Retention = Ø Watch ÷ Länge · Einstieg ✅ = Kamerafahrt/Zoom, — = Bewegung im Bild ohne Ausschnittwechsel_\n"
+        f">\n"
+        f"> ↳ _TT Shares/Engagement je Video: {' · '.join(extra_tt)}_\n"
+        f">\n"
+        f"> 🌍 **Publikum & Länder**\n"
+        f">\n"
+        f"{aud_konto}\n"
+        f">\n"
+        f"> | Video | TT-Länder | TT-Quellen | TT-Zuschauer | IG-Länder | IG-Quellen |\n"
+        f"> | --- | --- | --- | --- | --- | --- |\n"
+        f"{chr(10).join(audience_rows)}\n"
+        f"> _Länder als Top 5 in % (z.B. US 13.3 / DE 6.2 / …) · Quellen = FYP / Gefolgt / Profil / Suche bzw. Feed / Reels-Tab / Stories · "
+        f"TT-Zuschauer = neu / wiederkehrend, Nicht-Follower-Anteil · TT-Follower-Länder/Geschlecht aus dem Follower-Export_\n"
         f">\n"
         f"{drop_section}"
-        f"{voiceover_section}"
-        f"> 🧪 **Letzter Test:** \n"
-        f"> 🔬 **Nächste Woche:** \n"
-        f"> 🔗 **Muster:** _"
+        f"> 📝 **Voiceover-Texte**\n"
+        f"{chr(10).join(vo_lines)}\n"
+        f">\n"
+        f"> 🧪 **Letzter Test:** _\n"
+        f"> 🔬 **Nächste Woche:** _\n"
+        f">\n"
+        f"{obs_lines}"
     )
 
 
@@ -859,6 +1079,8 @@ def main():
     viewers_df   = pd.read_csv(viewers_path)   if viewers_path.exists()   else None
     followers_df = pd.read_csv(followers_path) if followers_path.exists() else None
     activity_df  = pd.read_csv(activity_path)  if activity_path.exists()  else None
+    gender_df      = pd.read_csv(DATA_DIR / 'gender.csv')      if (DATA_DIR / 'gender.csv').exists()      else None
+    territories_df = pd.read_csv(DATA_DIR / 'territories.csv') if (DATA_DIR / 'territories.csv').exists() else None
 
     content_df['Posted Date'] = pd.to_datetime(content_df['Posted Date'], errors='coerce')
     if overview_df  is not None:
@@ -1336,8 +1558,23 @@ def main():
             ('ig_views',     'IG Views',      '1.2k'),
             ('ig_saves',     'IG Saves',      '23'),
             ('ig_shares',    'IG Shares',     '15'),
+            ('ig_likes',     'IG Likes',      '120'),
+            ('ig_comments',  'IG Kommentare', '3'),
             ('ig_followers', 'IG Follower',   '+3'),
-            ('ig_watch',     'IG Ø Watch',    '22s'),
+            ('ig_watch',     'IG Ø Watch',    '6s'),
+            ('ig_skip',      'IG Skip',       '66.2%'),
+        ]
+        _FIELDS_META = [
+            ('kurz',         'Kurzname',      'Font Roles'),
+            ('blueprint',    'Blueprint',     'R / M'),
+            ('einstieg',     'Einstieg',      '✅ / —'),
+        ]
+        _FIELDS_AUD = [
+            ('tt_laender',   'TT-Länder',     'US 13.3 / DE 6.2 / BR 4.9'),
+            ('tt_quellen',   'TT-Quellen',    'FYP 88.6 / Gefolgt 7.0 / Profil 3.2'),
+            ('tt_zuschauer', 'TT-Zuschauer',  '4 % neu / 96 % wiederk., 25 % Nicht-Follower'),
+            ('ig_laender',   'IG-Länder',     'DE 8.0 / IN 7.7 / US 6.7'),
+            ('ig_quellen',   'IG-Quellen',    'Feed 51.7 / Reels-Tab 24.4 / Stories 15.7'),
         ]
         vm_changed = False
         ht_changed_weekly = False
@@ -1365,14 +1602,21 @@ def main():
                         if val != m.get(key, ''):
                             video_manual.setdefault(link, {})[key] = val
                             vm_changed = True
-                ig_cols = st.columns(len(_FIELDS_IG))
-                for col, (key, label, ph) in zip(ig_cols, _FIELDS_IG):
-                    with col:
-                        val = st.text_input(label, value=m.get(key, ''), key=f"{key}_{link}",
-                                            placeholder=ph, label_visibility="visible")
-                        if val != m.get(key, ''):
-                            video_manual.setdefault(link, {})[key] = val
-                            vm_changed = True
+                for fields in (_FIELDS_IG, _FIELDS_META, _FIELDS_AUD):
+                    cols = st.columns(len(fields))
+                    for col, (key, label, ph) in zip(cols, fields):
+                        with col:
+                            val = st.text_input(label, value=m.get(key, ''), key=f"{key}_{link}",
+                                                placeholder=ph, label_visibility="visible")
+                            if val != m.get(key, ''):
+                                video_manual.setdefault(link, {})[key] = val
+                                vm_changed = True
+                val = st.text_input("Notiz zum Video (erscheint im ↳-Absatz unter der Einordnung)",
+                                    value=m.get('notiz', ''), key=f"notiz_{link}",
+                                    placeholder="z.B. 75 % Follower trotz 88.6 % FYP → fast nur an Bestandspublikum ausgespielt")
+                if val != m.get('notiz', ''):
+                    video_manual.setdefault(link, {})['notiz'] = val
+                    vm_changed = True
                 drop_cols = st.columns(2)
                 with drop_cols[0]:
                     val = st.text_input("Text/Szene bei Absprung", value=m.get('absprung_text', ''),
@@ -1396,8 +1640,9 @@ def main():
             st.toast("✅ Hook-Typ gespeichert")
 
         callout = build_callout(filtered_df, viewers_df, followers_df, activity_df, now, hook_types, video_manual,
-                                custom_range=custom_range if period == 'Custom' else None)
-        st.caption("Top/Flop-Notiz und Muster-Zeile manuell befüllen. → ___ Werte nächste Woche nachtragen.")
+                                custom_range=custom_range if period == 'Custom' else None,
+                                content_df=content_df, gender_df=gender_df, territories_df=territories_df)
+        st.caption("___ = noch nachtragen (IG-Kontowerte, Notizen, Test). Status-Pfeile = Trend vs. Vorwoche.")
         st.code(callout, language=None)
     elif callout_mode == 'monthly':
         callout = build_month_callout(filtered_df, viewers_df, followers_df, overview_df, now, hook_types, video_manual,
@@ -1413,6 +1658,7 @@ def main():
 def _process_uploads(uploaded_files):
     all_content = []; all_overview = []; all_viewers = []
     all_followers = []; all_activity = []
+    gender_df = None; territories_df = None
 
     for uf in uploaded_files:
         ex = extract_csvs_from_zip(uf)
@@ -1425,6 +1671,8 @@ def _process_uploads(uploaded_files):
         if 'viewers'           in ex: all_viewers.append(ex['viewers'])
         if 'followers'         in ex: all_followers.append(ex['followers'])
         if 'follower_activity' in ex: all_activity.append(ex['follower_activity'])
+        if 'gender'            in ex: gender_df      = ex['gender']
+        if 'territories'       in ex: territories_df = ex['territories']
 
     if all_content:
         df = pd.concat(all_content, ignore_index=True)
@@ -1499,6 +1747,16 @@ def _process_uploads(uploaded_files):
             df = df[df['Active'] > 0]
             df.to_csv(DATA_DIR / 'activity.csv', index=False)
             st.sidebar.success("✅ Activity: ✓")
+
+    for df, cols, name in ((gender_df, ['Gender', 'Share'], 'gender.csv'),
+                           (territories_df, ['Territory', 'Share'], 'territories.csv')):
+        if df is not None and len(df.columns) >= 2:
+            df = df.iloc[:, :2].copy()
+            df.columns = cols
+            df['Share'] = pd.to_numeric(df['Share'], errors='coerce').fillna(0)
+            df.to_csv(DATA_DIR / name, index=False)
+    if gender_df is not None or territories_df is not None:
+        st.sidebar.success("✅ Follower-Länder/Geschlecht: ✓")
 
     st.sidebar.success("🎉 Fertig — Daten aktualisiert.")
 
